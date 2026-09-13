@@ -11,3 +11,7 @@ wheels/
 
 #data set
 visibility_satellite_2023_clean.parquet
+
+
+*.pt
+training_validation_loss*.png

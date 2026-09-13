@@ -10,14 +10,31 @@ STATION = "C19"
 LOOKBACK = 18
 HORIZON = 6
 
-FEATURES = [
+EXPERIMENT = "SAT"
+
+SATELLITE_FEATURES = [
     "B01", "B02", "B03", "B04",
     "B05", "B06", "B07", "B08",
     "B09", "B10", "B11", "B12",
     "B13", "B14", "B15", "B16",
 ]
 
+VISIBILITY_FEATURES = ["Visibility_km"]
+
+if EXPERIMENT == "SAT":
+    FEATURES = SATELLITE_FEATURES
+elif EXPERIMENT == "VIS":
+    FEATURES = VISIBILITY_FEATURES
+elif EXPERIMENT == "SAT_VIS":
+    FEATURES = SATELLITE_FEATURES + VISIBILITY_FEATURES
+else:
+    raise ValueError(f"未知的 EXPERIMENT：{EXPERIMENT}")
+
 TARGET = "Visibility_km"
+
+print("實驗模式：", EXPERIMENT)
+print("輸入 Features：", FEATURES)
+print("Feature 數量：", len(FEATURES))
 
 
 # =========================================================
@@ -63,6 +80,8 @@ def create_sequences(df, features, target, lookback, horizon):
     y_list = []
     target_time_list = []
 
+    persistence_list = []
+
     segments = df.partition_by("segment_id")
 
     for segment in segments:
@@ -83,19 +102,28 @@ def create_sequences(df, features, target, lookback, horizon):
             y = target_array[target_index]
 
             target_time = time_array[target_index]
-
+            current_index = i + lookback - 1
+            persistence_value = target_array[current_index]
+            
             X_list.append(X)
             y_list.append(y)
             target_time_list.append(target_time)
+
+            persistence_list.append(persistence_value)
 
     X = np.array(X_list, dtype=np.float32)
     y = np.array(y_list, dtype=np.float32)
     target_times = np.array(target_time_list)
 
-    return X, y, target_times
+    persistence = np.array(
+        persistence_list,
+        dtype=np.float32
+    )
+
+    return X, y, target_times, persistence
 
 
-X, y, target_times = create_sequences(
+X, y, target_times, persistence = create_sequences(
     station_df,
     FEATURES,
     TARGET,
@@ -143,13 +171,29 @@ y_val = y[val_mask]
 X_test = X[test_mask]
 y_test = y[test_mask]
 
+persistence_train = persistence[train_mask]
+persistence_val = persistence[val_mask]
+persistence_test = persistence[test_mask]
+
 # =========================================================
 # 5.1 移除含 NaN 的 sequence
 # =========================================================
 
-train_valid_mask = ~np.isnan(X_train).any(axis=(1, 2))
-val_valid_mask = ~np.isnan(X_val).any(axis=(1, 2))
-test_valid_mask = ~np.isnan(X_test).any(axis=(1, 2))
+train_valid_mask = (
+    ~np.isnan(X_train).any(axis=(1, 2))
+    & ~np.isnan(y_train)
+    & ~np.isnan(persistence_train)
+)
+val_valid_mask = (
+    ~np.isnan(X_val).any(axis=(1, 2))
+    & ~np.isnan(y_val)
+    & ~np.isnan(persistence_val)
+)
+test_valid_mask = (
+    ~np.isnan(X_test).any(axis=(1, 2))
+    & ~np.isnan(y_test)
+    & ~np.isnan(persistence_test)
+)
 
 print("\n=== 移除 NaN 前 ===")
 print("Train 含 NaN sequence 數：", (~train_valid_mask).sum())
@@ -158,6 +202,18 @@ print("Test 含 NaN sequence 數：", (~test_valid_mask).sum())
 
 X_train = X_train[train_valid_mask]
 y_train = y_train[train_valid_mask]
+
+persistence_train = persistence_train[
+    train_valid_mask
+]
+
+persistence_val = persistence_val[
+    val_valid_mask
+]
+
+persistence_test = persistence_test[
+    test_valid_mask
+]
 
 X_val = X_val[val_valid_mask]
 y_val = y_val[val_valid_mask]
