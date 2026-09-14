@@ -5,12 +5,12 @@ from torch.utils.data import TensorDataset, DataLoader
 
 DATA_PATH = "visibility_satellite_2023_clean.parquet"
 
-STATION = "C19"
+STATION = "C06"
 
 LOOKBACK = 18
 HORIZON = 6
 
-EXPERIMENT = "SAT"
+EXPERIMENT = "SAT"  # 可選 "SAT", "VIS", "SAT_VIS"
 
 SATELLITE_FEATURES = [
     "B01", "B02", "B03", "B04",
@@ -63,7 +63,11 @@ station_df = station_df.with_columns(
 
 station_df = station_df.with_columns(
     (
-        pl.col("time_diff") != pl.duration(minutes=10)
+        (pl.col("time_diff") != pl.duration(minutes=10))
+        | (
+            pl.col("DateTime_UTC0").dt.truncate("1mo")
+            != pl.col("DateTime_UTC0").dt.truncate("1mo").shift(1)
+        )
     )
     .fill_null(True)
     .cum_sum()
@@ -149,17 +153,17 @@ print("第一筆 target time:", target_times[0])
 # 5. 依時間切分 Train / Validation / Test
 # =========================================================
 
-train_end = np.datetime64("2023-10-01")
-val_end = np.datetime64("2023-11-01")
+target_months = target_times.astype("datetime64[M]")
 
-train_mask = target_times < train_end
-
-val_mask = (
-    (target_times >= train_end)
-    & (target_times < val_end)
+val_mask = np.isin(
+    target_months,
+    np.array(["2023-03", "2023-09"], dtype="datetime64[M]")
 )
-
-test_mask = target_times >= val_end
+test_mask = np.isin(
+    target_months,
+    np.array(["2023-06", "2023-12"], dtype="datetime64[M]")
+)
+train_mask = ~(val_mask | test_mask)
 
 
 X_train = X[train_mask]
@@ -194,6 +198,20 @@ test_valid_mask = (
     & ~np.isnan(y_test)
     & ~np.isnan(persistence_test)
 )
+
+all_valid_mask = (
+    ~np.isnan(X).any(axis=(1, 2))
+    & ~np.isnan(y)
+    & ~np.isnan(persistence)
+)
+
+print("\n=== 每月有效 sequence / 霧樣本數（< 1 km） ===")
+for month in np.unique(target_months):
+    month_mask = all_valid_mask & (target_months == month)
+    print(
+        f"{month}: {month_mask.sum()} / "
+        f"{(month_mask & (y < 1.0)).sum()}"
+    )
 
 print("\n=== 移除 NaN 前 ===")
 print("Train 含 NaN sequence 數：", (~train_valid_mask).sum())
