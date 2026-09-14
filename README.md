@@ -1,5 +1,7 @@
 # 向日葵衛星 AHI 波段 × 地面能見度 配對資料集 (2023)
 
+目前多測站 GRU 霧偵測實驗的流程、程式及結果另見 [GRU_FOG_EXPERIMENT_README.md](GRU_FOG_EXPERIMENT_README.md)。
+
 ## 概述
 
 本資料集用於研究 **衛星多光譜波段與地面能見度（霧）的關係**，目標是利用向日葵衛星（Himawari）AHI 感測器 16 個波段的觀測值，預測地面能見度或判斷是否起霧。

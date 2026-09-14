@@ -1,467 +1,198 @@
-import torch
-import torch.nn as nn
+"""Train one GRU on independent sequences from multiple stations."""
+
+import copy
+import csv
+import os
+
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
+from torch import nn
+from torch.utils.data import DataLoader
 
 from create_sequences import (
-    train_loader,
-    val_loader,
-    test_loader,
-    persistence_test
+    BATCH_SIZE, FEATURE_SETS, FOG_THRESHOLD_KM, build_datasets,
 )
 
-# =========================================================
-# 1. 建立 GRU 模型
-# =========================================================
+POS_WEIGHT_SCALE = 0.5  # 1.0 為原本的反類別比例權重；調低可減少漏報懲罰
+POS_WEIGHT_CAP = 5.0  # 多站霧比例更低，避免正類權重暴增而大量誤報
+
 
 class VisibilityGRU(nn.Module):
-    def __init__(
-        self,
-        input_size,
-        hidden_size=64,
-        num_layers=1
-    ):
+    def __init__(self, input_size, hidden_size=64, num_layers=1):
         super().__init__()
-
-        self.gru = nn.GRU(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True
-        )
-
+        self.gru = nn.GRU(input_size, hidden_size, num_layers, batch_first=True)
         self.fc = nn.Linear(hidden_size, 1)
 
     def forward(self, x):
-        output, hidden = self.gru(x)
-
-        last_hidden = hidden[-1]
-
-        prediction = self.fc(last_hidden)
-
-        return prediction
+        return self.fc(self.gru(x)[1][-1])  # logits; sigmoid only for probabilities
 
 
-# =========================================================
-# 2. 選擇 CPU / GPU
-# =========================================================
-
-device = torch.device(
-    "cuda" if torch.cuda.is_available() else "cpu"
-)
-
-print("Using device:", device)
-
-input_size = train_loader.dataset.tensors[0].shape[2]
-model = VisibilityGRU(input_size=input_size).to(device)
-
-print(model)
-
-
-# =========================================================
-# 3. 測試 DataLoader → GRU → Prediction
-# =========================================================
-
-first_X, first_y = next(iter(train_loader))
-
-first_X = first_X.to(device)
-first_y = first_y.to(device)
-
-with torch.no_grad():
-    prediction = model(first_X)
-
-print("\n=== Model Forward Test ===")
-print("Input shape:", first_X.shape)
-print("Prediction shape:", prediction.shape)
-print("Target shape:", first_y.shape)
-
-
-# =========================================================
-# 4. Loss function 與 Optimizer
-# =========================================================
-
-criterion = nn.MSELoss()
-
-optimizer = torch.optim.Adam(
-    model.parameters(),
-    lr=0.001
-)
-# =========================================================
-# 5. 訓練模型
-# =========================================================
-
-EPOCHS = 30
-
-train_losses = []
-val_losses = []
-
-best_val_loss = float("inf")
-best_epoch = 0
-
-BEST_MODEL_PATH = "best_gru_vis_model.pt"
-
-
-for epoch in range(EPOCHS):
-
-    # -----------------------------------------------------
-    # Training
-    # -----------------------------------------------------
-    model.train()
-
-    train_loss_sum = 0.0
-    train_sample_count = 0
-
-    for X_batch, y_batch in train_loader:
-
-        X_batch = X_batch.to(device)
-        y_batch = y_batch.to(device)
-
-        # 清除上一個 batch 的梯度
-        optimizer.zero_grad()
-
-        # Forward
-        predictions = model(X_batch)
-
-        # 計算 Loss
-        loss = criterion(
-            predictions,
-            y_batch
-        )
-
-        # Backpropagation
-        loss.backward()
-
-        # 更新模型參數
-        optimizer.step()
-
-        batch_size = X_batch.size(0)
-
-        train_loss_sum += (
-            loss.item() * batch_size
-        )
-
-        train_sample_count += batch_size
-
-
-    train_loss = (
-        train_loss_sum
-        / train_sample_count
-    )
-
-
-    # -----------------------------------------------------
-    # Validation
-    # -----------------------------------------------------
+def evaluate_loss(model, loader, criterion, device):
     model.eval()
-
-    val_loss_sum = 0.0
-    val_sample_count = 0
-
+    loss_sum = 0.0
+    count = 0
     with torch.no_grad():
-
-        for X_batch, y_batch in val_loader:
-
-            X_batch = X_batch.to(device)
-            y_batch = y_batch.to(device)
-
-            predictions = model(X_batch)
-
-            loss = criterion(
-                predictions,
-                y_batch
-            )
-
-            batch_size = X_batch.size(0)
-
-            val_loss_sum += (
-                loss.item() * batch_size
-            )
-
-            val_sample_count += batch_size
+        for x, y in loader:
+            x, y = x.to(device), y.to(device)
+            loss_sum += criterion(model(x), y).item() * len(x)
+            count += len(x)
+    if count == 0:
+        raise ValueError("評估資料集為空")
+    return loss_sum / count
 
 
-    val_loss = (
-        val_loss_sum
-        / val_sample_count
+def classification_metrics(actual, predicted):
+    tp = int(np.sum(predicted & (actual == 1)))
+    fp = int(np.sum(predicted & (actual == 0)))
+    fn = int(np.sum(~predicted & (actual == 1)))
+    tn = int(np.sum(~predicted & (actual == 0)))
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    pod = tp / (tp + fn) if tp + fn else 0.0
+    csi = tp / (tp + fp + fn) if tp + fp + fn else 0.0
+    return tp, fp, fn, tn, precision, pod, csi
+
+
+def print_metrics(name, actual, predicted):
+    tp, fp, fn, tn, precision, pod, csi = classification_metrics(actual, predicted)
+    print(f"\n=== {name} ===")
+    print(f"霧樣本：{int(actual.sum())} / {len(actual)}")
+    print(f"TP: {tp}, FP: {fp}, FN: {fn}, TN: {tn}")
+    print(f"Precision: {precision:.4f}, POD/Recall: {pod:.4f}, CSI: {csi:.4f}")
+    return {"tp": tp, "fp": fp, "fn": fn, "tn": tn,
+            "precision": precision, "pod": pod, "csi": csi}
+
+
+def predict_probabilities(model, loader, device):
+    logits, targets = [], []
+    model.eval()
+    with torch.no_grad():
+        for x, y in loader:
+            logits.append(model(x.to(device)).cpu())
+            targets.append(y)
+    probabilities = torch.sigmoid(torch.cat(logits)).numpy().ravel()
+    actual = torch.cat(targets).numpy().ravel().astype(np.int32)
+    return probabilities, actual
+
+
+def choose_threshold(actual, probabilities):
+    # F0.5 比 F1 更重視 precision，減少假陽性；只用 validation 選門檻。
+    best_score, best_threshold = -1.0, 0.5
+    for threshold in np.arange(0.05, 0.951, 0.01):
+        tp, fp, fn, _, _, _, _ = classification_metrics(actual, probabilities >= threshold)
+        score = 1.25 * tp / (1.25 * tp + fp + 0.25 * fn) if tp else 0.0
+        if score > best_score or (score == best_score and threshold > best_threshold):
+            best_score, best_threshold = score, float(threshold)
+    return best_threshold, best_score
+
+
+def run_experiment(feature_mode, epochs, device):
+    print(f"\n{'=' * 20} {feature_mode} {'=' * 20}")
+    torch.manual_seed(42)
+    np.random.seed(42)
+    datasets, features = build_datasets(feature_mode)
+    train_loader = DataLoader(datasets["train"], batch_size=BATCH_SIZE, shuffle=True,
+                              generator=torch.Generator().manual_seed(42))
+    val_loader = DataLoader(datasets["val"], batch_size=BATCH_SIZE)
+    test_loader = DataLoader(datasets["temporal_test"], batch_size=BATCH_SIZE)
+    spatial_test_loader = DataLoader(datasets["spatial_test"], batch_size=BATCH_SIZE)
+    fog_count = int(train_loader.dataset.labels.sum())
+    non_fog_count = len(train_loader.dataset) - fog_count
+    if fog_count == 0 or non_fog_count == 0:
+        raise ValueError("訓練集須同時包含霧與非霧樣本")
+    # 多站霧比例很低；權重設上限，避免一味偏向報霧而產生大量 FP。
+    pos_weight = torch.tensor(
+        [min(POS_WEIGHT_SCALE * non_fog_count / fog_count, POS_WEIGHT_CAP)], device=device
     )
-
-
-    # -----------------------------------------------------
-    # 紀錄每個 Epoch 的 Loss
-    # -----------------------------------------------------
-
-    train_losses.append(train_loss)
-    val_losses.append(val_loss)
-
-
-    # -----------------------------------------------------
-    # 儲存 Validation Loss 最佳模型
-    # -----------------------------------------------------
-
-    if val_loss < best_val_loss:
-
-        best_val_loss = val_loss
-        best_epoch = epoch + 1
-
-        torch.save(
-            model.state_dict(),
-            BEST_MODEL_PATH
-        )
-
-
-    # -----------------------------------------------------
-    # 顯示當前 Epoch
-    # -----------------------------------------------------
-
-    print(
-        f"Epoch {epoch + 1:02d}/{EPOCHS} | "
-        f"Train Loss: {train_loss:.4f} | "
-        f"Val Loss: {val_loss:.4f}"
-    )
-
-
-print("\n=== Training 完成 ===")
-
-print(
-    f"Best Epoch: {best_epoch}"
-)
-
-print(
-    f"Best Validation Loss: "
-    f"{best_val_loss:.4f}"
-)
-
-
-# =========================================================
-# 7. 載入 Validation 表現最佳的模型
-# =========================================================
-
-model.load_state_dict(
-    torch.load(
-        BEST_MODEL_PATH,
-        map_location=device
-    )
-)
-
-model.eval()
-
-print(
-    f"\n已載入 Best Model："
-    f"Epoch {best_epoch}, "
-    f"Validation Loss = {best_val_loss:.4f}"
-)
-
-# =========================================================
-# 8. Test Set 評估
-# =========================================================
-
-test_loss_sum = 0.0
-test_sample_count = 0
-
-all_predictions = []
-all_targets = []
-
-
-with torch.no_grad():
-
-    for X_batch, y_batch in test_loader:
-
-        X_batch = X_batch.to(device)
-        y_batch = y_batch.to(device)
-
-        predictions = model(X_batch)
-
-        loss = criterion(
-            predictions,
-            y_batch
-        )
-
-        batch_size = X_batch.size(0)
-
-        test_loss_sum += (
-            loss.item() * batch_size
-        )
-
-        test_sample_count += batch_size
-
-        all_predictions.append(
-            predictions.cpu()
-        )
-
-        all_targets.append(
-            y_batch.cpu()
-        )
-
-
-test_loss = (
-    test_loss_sum
-    / test_sample_count
-)
-
-
-all_predictions = torch.cat(
-    all_predictions
-).numpy()
-
-all_targets = torch.cat(
-    all_targets
-).numpy()
-
-# =========================================================
-# 9. Test RMSE / MAE
-# =========================================================
-
-rmse = np.sqrt(
-    np.mean(
-        (
-            all_predictions
-            - all_targets
-        ) ** 2
-    )
-)
-
-mae = np.mean(
-    np.abs(
-        all_predictions
-        - all_targets
-    )
-)
-
-
-print("\n=== Test Results ===")
-
-print(
-    f"Best Epoch: {best_epoch}"
-)
-
-print(
-    f"Test MSE: "
-    f"{test_loss:.4f}"
-)
-
-print(
-    f"Test RMSE: "
-    f"{rmse:.4f} km"
-)
-
-print(
-    f"Test MAE: "
-    f"{mae:.4f} km"
-)
-
-# =========================================================
-# 10. Persistence Baseline
-# =========================================================
-
-test_targets = all_targets.squeeze()
-
-persistence_mse = np.mean(
-    (
-        persistence_test
-        - test_targets
-    ) ** 2
-)
-
-persistence_rmse = np.sqrt(
-    persistence_mse
-)
-
-persistence_mae = np.mean(
-    np.abs(
-        persistence_test
-        - test_targets
-    )
-)
-
-print("\n=== Persistence Baseline ===")
-
-print(
-    f"Persistence MSE: "
-    f"{persistence_mse:.4f}"
-)
-
-print(
-    f"Persistence RMSE: "
-    f"{persistence_rmse:.4f} km"
-)
-
-print(
-    f"Persistence MAE: "
-    f"{persistence_mae:.4f} km"
-)
-
-#GRU vs Persistence
-
-print("\n=== GRU vs Persistence ===")
-
-print(
-    f"GRU RMSE:         {rmse:.4f} km"
-)
-
-print(
-    f"Persistence RMSE: {persistence_rmse:.4f} km"
-)
-
-print(
-    f"GRU MAE:          {mae:.4f} km"
-)
-
-print(
-    f"Persistence MAE:  {persistence_mae:.4f} km"
-)
-
-# =========================================================
-# 6. 繪製 Training / Validation Loss Curve
-# =========================================================
-
-epochs = range(
-    1,
-    EPOCHS + 1
-)
-
-plt.figure(figsize=(10, 6))
-
-plt.plot(
-    epochs,
-    train_losses,
-    marker="o",
-    markersize=4,
-    label="Training Loss"
-)
-
-plt.plot(
-    epochs,
-    val_losses,
-    marker="o",
-    markersize=4,
-    label="Validation Loss"
-)
-
-plt.axvline(
-    x=best_epoch,
-    linestyle="--",
-    label=f"Best Epoch = {best_epoch}"
-)
-
-plt.xlabel("Epoch")
-plt.ylabel("MSE Loss")
-
-plt.title(
-    "GRU Training and Validation Loss"
-)
-
-plt.legend()
-
-plt.grid(
-    True,
-    alpha=0.3
-)
-
-plt.tight_layout()
-
-plt.savefig(
-    "training_validation_loss_vis.png",
-    dpi=300
-)
-
-plt.show()
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    print(f"Train 霧樣本：{fog_count} / {len(train_loader.dataset)}；pos_weight：{pos_weight.item():.2f}")
+
+    model = VisibilityGRU(len(features)).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    train_losses, val_losses = [], []
+    best_val_loss, best_epoch, best_state = float("inf"), 0, None
+    for epoch in range(1, epochs + 1):
+        model.train()
+        loss_sum = 0.0
+        for x, y in train_loader:
+            x, y = x.to(device), y.to(device)
+            optimizer.zero_grad()
+            loss = criterion(model(x), y)
+            loss.backward()
+            optimizer.step()
+            loss_sum += loss.item() * len(x)
+        train_loss = loss_sum / len(train_loader.dataset)
+        val_loss = evaluate_loss(model, val_loader, criterion, device)
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+        if val_loss < best_val_loss:
+            best_val_loss, best_epoch = val_loss, epoch
+            best_state = copy.deepcopy(model.state_dict())
+        print(f"Epoch {epoch:02d}/{epochs} | Train BCE: {train_loss:.4f} | Val BCE: {val_loss:.4f}")
+
+    model.load_state_dict(best_state)
+    torch.save(best_state, f"best_gru_fog_{feature_mode.lower()}_model.pt")
+    print(f"Best Epoch: {best_epoch}; Best Validation weighted BCE: {best_val_loss:.4f}")
+    val_probabilities, val_actual = predict_probabilities(model, val_loader, device)
+    # 門檻只從 validation 選，temporal/spatial test 都不能參與調整。
+    threshold, val_f05 = choose_threshold(val_actual, val_probabilities)
+    print(f"Validation F0.5 最佳門檻：{threshold:.2f}（F0.5={val_f05:.4f}）")
+    print_metrics("GRU Validation @ 0.50", val_actual, val_probabilities >= 0.5)
+    print_metrics("GRU Validation @ selected threshold", val_actual, val_probabilities >= threshold)
+
+    test_loss = evaluate_loss(model, test_loader, criterion, device)
+    probabilities, actual = predict_probabilities(model, test_loader, device)
+    print(f"Test weighted BCE: {test_loss:.4f}")
+    print_metrics("GRU Test @ 0.50", actual, probabilities >= 0.5)
+    temporal_metrics = print_metrics("GRU Test", actual, probabilities >= threshold)
+    print_metrics("Persistence Test", actual,
+                  datasets["temporal_test"].persistence < FOG_THRESHOLD_KM)
+
+    spatial_loss = evaluate_loss(model, spatial_test_loader, criterion, device)
+    spatial_probabilities, spatial_actual = predict_probabilities(model, spatial_test_loader, device)
+    print(f"Spatial Test weighted BCE: {spatial_loss:.4f}")
+    spatial_metrics = print_metrics("GRU Spatial Test", spatial_actual,
+                                    spatial_probabilities >= threshold)
+    print_metrics("Persistence Spatial Test", spatial_actual,
+                  datasets["spatial_test"].persistence < FOG_THRESHOLD_KM)
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(range(1, epochs + 1), train_losses, label="Training Loss")
+    plt.plot(range(1, epochs + 1), val_losses, label="Validation Loss")
+    plt.axvline(best_epoch, linestyle="--", label=f"Best Epoch = {best_epoch}")
+    plt.xlabel("Epoch")
+    plt.ylabel("Weighted BCE Loss")
+    plt.title("Multi-station GRU Fog Detection Loss")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f"training_validation_loss_fog_{feature_mode.lower()}.png", dpi=300)
+    plt.close()
+    return [
+        {"mode": feature_mode, "split": "temporal_test", "features": len(features),
+         "best_epoch": best_epoch, "threshold": threshold, **temporal_metrics},
+        {"mode": feature_mode, "split": "spatial_test", "features": len(features),
+         "best_epoch": best_epoch, "threshold": threshold, **spatial_metrics},
+    ]
+
+
+def main():
+    epochs = int(os.getenv("FOG_EPOCHS", "30"))
+    if epochs < 1:
+        raise ValueError("FOG_EPOCHS 至少須為 1")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Using device:", device)
+    rows = []
+    for mode in FEATURE_SETS:
+        rows.extend(run_experiment(mode, epochs, device))
+    with open("fog_feature_comparison.csv", "w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.DictWriter(file, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+    print("\n=== Feature comparison ===")
+    for row in rows:
+        print(row)
+
+
+if __name__ == "__main__":
+    main()

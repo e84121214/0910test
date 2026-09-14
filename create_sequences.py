@@ -1,408 +1,157 @@
-import polars as pl
+"""Build per-station fog sequences for one shared GRU.
+
+Temporal test uses training stations in June/December. Spatial test uses the
+held-out station in training months, so only the station changes.
+"""
+
 import numpy as np
+import polars as pl
 import torch
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 DATA_PATH = "visibility_satellite_2023_clean.parquet"
-
-STATION = "C06"
-
+DATA_SOURCE = "ACOS"  # ACOS stations have the same stated visibility ceiling
+SPATIAL_TEST_STATION = "C48"
 LOOKBACK = 18
 HORIZON = 6
-
-EXPERIMENT = "SAT"  # 可選 "SAT", "VIS", "SAT_VIS"
-
-SATELLITE_FEATURES = [
-    "B01", "B02", "B03", "B04",
-    "B05", "B06", "B07", "B08",
-    "B09", "B10", "B11", "B12",
-    "B13", "B14", "B15", "B16",
-]
-
-VISIBILITY_FEATURES = ["Visibility_km"]
-
-if EXPERIMENT == "SAT":
-    FEATURES = SATELLITE_FEATURES
-elif EXPERIMENT == "VIS":
-    FEATURES = VISIBILITY_FEATURES
-elif EXPERIMENT == "SAT_VIS":
-    FEATURES = SATELLITE_FEATURES + VISIBILITY_FEATURES
-else:
-    raise ValueError(f"未知的 EXPERIMENT：{EXPERIMENT}")
-
-TARGET = "Visibility_km"
-
-print("實驗模式：", EXPERIMENT)
-print("輸入 Features：", FEATURES)
-print("Feature 數量：", len(FEATURES))
-
-
-# =========================================================
-# 1. 讀取資料
-# =========================================================
-
-df = pl.read_parquet(DATA_PATH)
-
-station_df = (
-    df.filter(pl.col("Station_ID") == STATION)
-      .sort("DateTime_UTC0")
-)
-
-print("原始測站資料筆數：", station_df.height)
-
-
-# =========================================================
-# 2. 建立連續區段 segment_id
-# =========================================================
-
-station_df = station_df.with_columns(
-    pl.col("DateTime_UTC0")
-      .diff()
-      .alias("time_diff")
-)
-
-station_df = station_df.with_columns(
-    (
-        (pl.col("time_diff") != pl.duration(minutes=10))
-        | (
-            pl.col("DateTime_UTC0").dt.truncate("1mo")
-            != pl.col("DateTime_UTC0").dt.truncate("1mo").shift(1)
-        )
-    )
-    .fill_null(True)
-    .cum_sum()
-    .alias("segment_id")
-)
-
-
-# =========================================================
-# 3. 建立 sequence
-# =========================================================
-
-def create_sequences(df, features, target, lookback, horizon):
-    X_list = []
-    y_list = []
-    target_time_list = []
-
-    persistence_list = []
-
-    segments = df.partition_by("segment_id")
-
-    for segment in segments:
-        n = segment.height
-
-        # 這個 segment 太短，無法產生樣本
-        if n < lookback + horizon:
-            continue
-
-        feature_array = segment.select(features).to_numpy()
-        target_array = segment[target].to_numpy()
-        time_array = segment["DateTime_UTC0"].to_numpy()
-
-        for i in range(n - lookback - horizon + 1):
-            X = feature_array[i:i + lookback]
-
-            target_index = i + lookback + horizon - 1
-            y = target_array[target_index]
-
-            target_time = time_array[target_index]
-            current_index = i + lookback - 1
-            persistence_value = target_array[current_index]
-            
-            X_list.append(X)
-            y_list.append(y)
-            target_time_list.append(target_time)
-
-            persistence_list.append(persistence_value)
-
-    X = np.array(X_list, dtype=np.float32)
-    y = np.array(y_list, dtype=np.float32)
-    target_times = np.array(target_time_list)
-
-    persistence = np.array(
-        persistence_list,
-        dtype=np.float32
-    )
-
-    return X, y, target_times, persistence
-
-
-X, y, target_times, persistence = create_sequences(
-    station_df,
-    FEATURES,
-    TARGET,
-    LOOKBACK,
-    HORIZON
-)
-
-
-# =========================================================
-# 4. 檢查結果
-# =========================================================
-
-print("\n=== Sequence 建立完成 ===")
-print("X shape:", X.shape)
-print("y shape:", y.shape)
-print("target_times shape:", target_times.shape)
-
-print("\n第一筆 X shape:", X[0].shape)
-print("第一筆 y:", y[0])
-print("第一筆 target time:", target_times[0])
-
-# =========================================================
-# 5. 依時間切分 Train / Validation / Test
-# =========================================================
-
-target_months = target_times.astype("datetime64[M]")
-
-val_mask = np.isin(
-    target_months,
-    np.array(["2023-03", "2023-09"], dtype="datetime64[M]")
-)
-test_mask = np.isin(
-    target_months,
-    np.array(["2023-06", "2023-12"], dtype="datetime64[M]")
-)
-train_mask = ~(val_mask | test_mask)
-
-
-X_train = X[train_mask]
-y_train = y[train_mask]
-
-X_val = X[val_mask]
-y_val = y[val_mask]
-
-X_test = X[test_mask]
-y_test = y[test_mask]
-
-persistence_train = persistence[train_mask]
-persistence_val = persistence[val_mask]
-persistence_test = persistence[test_mask]
-
-# =========================================================
-# 5.1 移除含 NaN 的 sequence
-# =========================================================
-
-train_valid_mask = (
-    ~np.isnan(X_train).any(axis=(1, 2))
-    & ~np.isnan(y_train)
-    & ~np.isnan(persistence_train)
-)
-val_valid_mask = (
-    ~np.isnan(X_val).any(axis=(1, 2))
-    & ~np.isnan(y_val)
-    & ~np.isnan(persistence_val)
-)
-test_valid_mask = (
-    ~np.isnan(X_test).any(axis=(1, 2))
-    & ~np.isnan(y_test)
-    & ~np.isnan(persistence_test)
-)
-
-all_valid_mask = (
-    ~np.isnan(X).any(axis=(1, 2))
-    & ~np.isnan(y)
-    & ~np.isnan(persistence)
-)
-
-print("\n=== 每月有效 sequence / 霧樣本數（< 1 km） ===")
-for month in np.unique(target_months):
-    month_mask = all_valid_mask & (target_months == month)
-    print(
-        f"{month}: {month_mask.sum()} / "
-        f"{(month_mask & (y < 1.0)).sum()}"
-    )
-
-print("\n=== 移除 NaN 前 ===")
-print("Train 含 NaN sequence 數：", (~train_valid_mask).sum())
-print("Validation 含 NaN sequence 數：", (~val_valid_mask).sum())
-print("Test 含 NaN sequence 數：", (~test_valid_mask).sum())
-
-X_train = X_train[train_valid_mask]
-y_train = y_train[train_valid_mask]
-
-persistence_train = persistence_train[
-    train_valid_mask
-]
-
-persistence_val = persistence_val[
-    val_valid_mask
-]
-
-persistence_test = persistence_test[
-    test_valid_mask
-]
-
-X_val = X_val[val_valid_mask]
-y_val = y_val[val_valid_mask]
-
-X_test = X_test[test_valid_mask]
-y_test = y_test[test_valid_mask]
-
-print("\n=== 移除 NaN 後 ===")
-print("Train:", X_train.shape, y_train.shape)
-print("Validation:", X_val.shape, y_val.shape)
-print("Test:", X_test.shape, y_test.shape)
-
-print("Train NaN 數量：", np.isnan(X_train).sum())
-print("Validation NaN 數量：", np.isnan(X_val).sum())
-print("Test NaN 數量：", np.isnan(X_test).sum())
-
-print("\n=== Train / Validation / Test ===")
-
-print("Train:")
-print("X:", X_train.shape)
-print("y:", y_train.shape)
-
-print("\nValidation:")
-print("X:", X_val.shape)
-print("y:", y_val.shape)
-
-print("\nTest:")
-print("X:", X_test.shape)
-print("y:", y_test.shape)
-
-# NaN 檢查
-print("\n=== NaN 檢查 ===")
-print("X NaN 數量：", np.isnan(X).sum())
-print("y NaN 數量：", np.isnan(y).sum())
-
-# 檢查每個 feature 的 NaN 數量
-nan_per_feature = np.isnan(X).sum(axis=(0, 1))
-
-print("\n=== 每個 Feature 的 NaN 數量 ===")
-
-for feature, nan_count in zip(FEATURES, nan_per_feature):
-    print(f"{feature}: {nan_count}")
-
-# =========================================================
-# 6. 使用 Training Set 統計量進行 Standardization
-# =========================================================
-
-feature_mean = X_train.mean(axis=(0, 1), keepdims=True)
-feature_std = X_train.std(axis=(0, 1), keepdims=True)
-
-# 避免某個 feature 標準差剛好為 0
-feature_std[feature_std == 0] = 1.0
-
-
-X_train_scaled = (
-    X_train - feature_mean
-) / feature_std
-
-X_val_scaled = (
-    X_val - feature_mean
-) / feature_std
-
-X_test_scaled = (
-    X_test - feature_mean
-) / feature_std
-
-
-print("\n=== Standardization 完成 ===")
-
-print(
-    "Train standardized mean:",
-    X_train_scaled.mean(axis=(0, 1))
-)
-
-print(
-    "Train standardized std:",
-    X_train_scaled.std(axis=(0, 1))
-)
-
-# =========================================================
-# 7. NumPy → PyTorch Tensor
-# =========================================================
-
-X_train_tensor = torch.tensor(
-    X_train_scaled,
-    dtype=torch.float32
-)
-
-y_train_tensor = torch.tensor(
-    y_train,
-    dtype=torch.float32
-).unsqueeze(1)
-
-
-X_val_tensor = torch.tensor(
-    X_val_scaled,
-    dtype=torch.float32
-)
-
-y_val_tensor = torch.tensor(
-    y_val,
-    dtype=torch.float32
-).unsqueeze(1)
-
-
-X_test_tensor = torch.tensor(
-    X_test_scaled,
-    dtype=torch.float32
-)
-
-y_test_tensor = torch.tensor(
-    y_test,
-    dtype=torch.float32
-).unsqueeze(1)
-
-
-print("\n=== Tensor shape ===")
-
-print(
-    "X_train:",
-    X_train_tensor.shape
-)
-
-print(
-    "y_train:",
-    y_train_tensor.shape
-)
-
-# =========================================================
-# 8. 建立 DataLoader
-# =========================================================
-
+FOG_THRESHOLD_KM = 1.0
+SATELLITE_FEATURES = [f"B{i:02d}" for i in range(1, 17)]
+TIME_FEATURES = ["hour_sin", "hour_cos", "month_sin", "month_cos"]
+GEO_FEATURES = ["Latitude", "Longitude", "Elevation_m"]
+FEATURE_SETS = {
+    "SAT": SATELLITE_FEATURES,
+    "SAT_TIME": SATELLITE_FEATURES + TIME_FEATURES,
+    "SAT_TIME_GEO": SATELLITE_FEATURES + TIME_FEATURES + GEO_FEATURES,
+}
+VALIDATION_MONTHS = {3, 9}
+TEMPORAL_TEST_MONTHS = {6, 12}
 BATCH_SIZE = 128
 
-train_dataset = TensorDataset(
-    X_train_tensor,
-    y_train_tensor
-)
 
-val_dataset = TensorDataset(
-    X_val_tensor,
-    y_val_tensor
-)
+class SequenceDataset(Dataset):
+    def __init__(self, segments, records, mean, std):
+        self.segments = segments
+        self.records = records  # segment index, window start, target index
+        self.mean = mean
+        self.std = std
+        self.labels = np.asarray(
+            [segments[s]["visibility"][t] < FOG_THRESHOLD_KM for s, _, t in records],
+            dtype=np.float32,
+        )
+        self.persistence = np.asarray(
+            [segments[s]["visibility"][start + LOOKBACK - 1] for s, start, _ in records],
+            dtype=np.float32,
+        )
+        self.station_ids = np.asarray([segments[s]["station"] for s, _, _ in records])
 
-test_dataset = TensorDataset(
-    X_test_tensor,
-    y_test_tensor
-)
+    def __len__(self):
+        return len(self.records)
 
-
-train_loader = DataLoader(
-    train_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=True
-)
-
-val_loader = DataLoader(
-    val_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=False
-)
-
-test_loader = DataLoader(
-    test_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=False
-)
+    def __getitem__(self, index):
+        segment_id, start, _ = self.records[index]
+        window = self.segments[segment_id]["features"][start:start + LOOKBACK]
+        x = torch.from_numpy(((window - self.mean) / self.std).astype(np.float32))
+        y = torch.tensor([self.labels[index]], dtype=torch.float32)
+        return x, y
 
 
-first_X, first_y = next(iter(train_loader))
+def build_datasets(feature_mode="SAT"):
+    if feature_mode not in FEATURE_SETS:
+        raise ValueError(f"未知的特徵組合：{feature_mode}")
+    feature_names = FEATURE_SETS[feature_mode]
+    columns = ["Station_ID", "Data_Source", "DateTime_UTC0", "Visibility_km",
+               *SATELLITE_FEATURES, *GEO_FEATURES]
+    df = pl.read_parquet(DATA_PATH, columns=columns).filter(pl.col("Data_Source") == DATA_SOURCE)
+    local_time = pl.col("DateTime_UTC0") + pl.duration(hours=8)
+    hour_angle = (local_time.dt.hour() + local_time.dt.minute() / 60) * (2 * np.pi / 24)
+    month_angle = (local_time.dt.month() - 1) * (2 * np.pi / 12)
+    df = df.with_columns(
+        hour_angle.sin().alias("hour_sin"), hour_angle.cos().alias("hour_cos"),
+        month_angle.sin().alias("month_sin"), month_angle.cos().alias("month_cos"),
+    )
+    station_ids = sorted(df["Station_ID"].unique().to_list())
+    if SPATIAL_TEST_STATION not in station_ids or len(station_ids) < 2:
+        raise ValueError("空間測試站不存在，或可用測站不足兩站")
+    print(f"特徵組合：{feature_mode} ({len(feature_names)} features)；資料來源：{DATA_SOURCE}；"
+          f"測站數：{len(station_ids)}；保留站：{SPATIAL_TEST_STATION}")
 
-print("\n=== 第一個 Batch ===")
-print("X batch shape:", first_X.shape)
-print("y batch shape:", first_y.shape)
+    segments = []
+    split_records = {name: [] for name in ("train", "val", "temporal_test", "spatial_test")}
+    for station_id in station_ids:
+        station = df.filter(pl.col("Station_ID") == station_id).sort("DateTime_UTC0")
+        station = station.with_columns(
+            (pl.col("DateTime_UTC0").diff() != pl.duration(minutes=10)).fill_null(True)
+            .alias("gap"),
+            (pl.col("DateTime_UTC0").dt.truncate("1mo")
+             != pl.col("DateTime_UTC0").dt.truncate("1mo").shift(1))
+            .fill_null(True).alias("new_month"),
+        ).with_columns((pl.col("gap") | pl.col("new_month")).cum_sum().alias("segment_id"))
+        station_counts = {name: [0, 0] for name in split_records}
+        for part in station.partition_by("segment_id"):
+            n = part.height
+            if n < LOOKBACK + HORIZON:
+                continue
+            features = part.select(feature_names).to_numpy().astype(np.float32)
+            visibility = part["Visibility_km"].to_numpy().astype(np.float32)
+            month = part["DateTime_UTC0"][0].month
+            invalid = np.concatenate(([0], np.cumsum(~np.isfinite(features).all(axis=1))))
+            starts = np.arange(n - LOOKBACK - HORIZON + 1)
+            # 輸入截止於 current；target 比 current 晚 HORIZON 個 10 分鐘時段。
+            targets = starts + LOOKBACK + HORIZON - 1
+            current = starts + LOOKBACK - 1
+            valid = ((invalid[starts + LOOKBACK] - invalid[starts]) == 0)
+            valid &= np.isfinite(visibility[targets]) & np.isfinite(visibility[current])
+            if not valid.any():
+                continue
+            segment_index = len(segments)
+            segments.append({"station": station_id, "features": features, "visibility": visibility,
+                             "month": month})
+            # 留出站只取訓練月份測試，避免同時更換測站與月份。
+            if station_id == SPATIAL_TEST_STATION:
+                split = "spatial_test" if month not in VALIDATION_MONTHS | TEMPORAL_TEST_MONTHS else None
+            elif month in VALIDATION_MONTHS:
+                split = "val"
+            elif month in TEMPORAL_TEST_MONTHS:
+                split = "temporal_test"
+            else:
+                split = "train"
+            if split is None:
+                continue
+            selected_starts, selected_targets = starts[valid], targets[valid]
+            split_records[split].extend((segment_index, int(a), int(b))
+                                        for a, b in zip(selected_starts, selected_targets))
+            station_counts[split][0] += len(selected_starts)
+            station_counts[split][1] += int((visibility[selected_targets] < FOG_THRESHOLD_KM).sum())
+        print(f"{station_id}: " + ", ".join(
+            f"{name}={count}/{fog}霧" for name, (count, fog) in station_counts.items() if count))
+
+    if any(not records for records in split_records.values()):
+        raise ValueError("至少一個切分沒有有效序列，請調整測站或月份")
+
+    # Use only rows from training windows for scaling; repeated rows are counted once.
+    training_rows = {}
+    for segment_id, start, _ in split_records["train"]:
+        mask = training_rows.setdefault(segment_id, np.zeros(len(segments[segment_id]["features"]), dtype=bool))
+        mask[start:start + LOOKBACK] = True
+    chunks = [segments[s]["features"][mask] for s, mask in training_rows.items()]
+    train_rows = np.concatenate(chunks)
+    mean = train_rows.mean(axis=0).astype(np.float32)
+    std = train_rows.std(axis=0).astype(np.float32)
+    std[std == 0] = 1.0
+
+    datasets = {name: SequenceDataset(segments, records, mean, std)
+                for name, records in split_records.items()}
+    for name, dataset in datasets.items():
+        print(f"{name}: {len(dataset)} sequences, {int(dataset.labels.sum())} fog targets, "
+              f"{len(np.unique(dataset.station_ids))} stations")
+    train_stations = set(datasets["train"].station_ids)
+    assert SPATIAL_TEST_STATION not in train_stations
+    assert set(datasets["spatial_test"].station_ids) == {SPATIAL_TEST_STATION}
+    return datasets, feature_names
+
+
+if __name__ == "__main__":
+    datasets, feature_names = build_datasets("SAT_TIME_GEO")
+    train_loader = DataLoader(datasets["train"], batch_size=BATCH_SIZE, shuffle=True)
+    x, y = next(iter(train_loader))
+    print("第一個 batch:", x.shape, y.shape, feature_names)
