@@ -70,13 +70,17 @@
 ```powershell
 uv run python create_sequences.py  # 僅檢查資料及第一個 batch
 uv run python train_gru.py         # 三組特徵各訓練 30 epoch
+uv run python train_gru.py --mode SAT --epochs 30
+uv run python train_gru.py --mode SAT_TIME --epochs 30
+uv run python train_gru.py --mode SAT_TIME_GEO --epochs 30
 ```
 
-短程流程測試可於 PowerShell 先設定 `$env:FOG_EPOCHS='5'`，再執行訓練；此設定只改訓練輪數，**短跑結果不應與上述 30-epoch 結果混用**。模型可用 CUDA 時會使用 GPU，否則使用 CPU。`pyproject.toml` 定義相依套件，`uv.lock` 鎖定安裝版本。
+不傳 `--mode` 時預設為 `ALL`，依 `SAT`、`SAT_TIME`、`SAT_TIME_GEO` 的順序全部執行。短程流程測試可使用 `--epochs 5`；此設定只改訓練輪數，**短跑結果不應與上述 30-epoch 結果混用**。模型可用 CUDA 時會使用 GPU，否則使用 CPU。`pyproject.toml` 定義相依套件，`uv.lock` 鎖定安裝版本。
 
 | 輸出 | 內容與注意事項 |
 |---|---|
 | `fog_feature_comparison.csv` | 三組特徵 × temporal/spatial 兩個測試，共六列；含特徵數、最佳 epoch、validation 選出的門檻及分類指標。這是目前主要結果表。 |
+| `fog_feature_results_<mode>.csv` | 使用 `--mode` 單跑一組時產生的兩列結果；避免覆寫完整的三組比較表。 |
 | `best_gru_fog_sat_model.pt`、`best_gru_fog_sat_time_model.pt`、`best_gru_fog_sat_time_geo_model.pt` | 各組 validation loss 最佳的 PyTorch `state_dict`。**目前只存模型權重，沒有一起存標準化參數、特徵順序與門檻，不能單靠 `.pt` 檔獨立部署。** |
 | `training_validation_loss_fog_sat.png`、`training_validation_loss_fog_sat_time.png`、`training_validation_loss_fog_sat_time_geo.png` | 三組各自的 train／validation weighted BCE 曲線，虛線標出最佳 epoch；用來觀察訓練與驗證損失是否分離，不能單靠曲線判定霧偵測品質。 |
 

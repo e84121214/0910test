@@ -2,7 +2,7 @@
 
 import copy
 import csv
-import os
+import argparse
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -176,20 +176,37 @@ def run_experiment(feature_mode, epochs, device):
     ]
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="多測站 GRU 霧偵測特徵比較")
+    parser.add_argument(
+        "--mode",
+        choices=["ALL", *FEATURE_SETS],
+        default="ALL",
+        help="選擇單一特徵組合；預設 ALL 依序執行三組",
+    )
+    parser.add_argument("--epochs", type=int, default=30, help="每組訓練 epoch 數")
+    return parser.parse_args()
+
+
 def main():
-    epochs = int(os.getenv("FOG_EPOCHS", "30"))
-    if epochs < 1:
-        raise ValueError("FOG_EPOCHS 至少須為 1")
+    args = parse_args()
+    if args.epochs < 1:
+        raise ValueError("--epochs 至少須為 1")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
+    modes = list(FEATURE_SETS) if args.mode == "ALL" else [args.mode]
     rows = []
-    for mode in FEATURE_SETS:
-        rows.extend(run_experiment(mode, epochs, device))
-    with open("fog_feature_comparison.csv", "w", newline="", encoding="utf-8-sig") as file:
+    for mode in modes:
+        rows.extend(run_experiment(mode, args.epochs, device))
+    output_path = (
+        "fog_feature_comparison.csv" if args.mode == "ALL"
+        else f"fog_feature_results_{args.mode.lower()}.csv"
+    )
+    with open(output_path, "w", newline="", encoding="utf-8-sig") as file:
         writer = csv.DictWriter(file, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
-    print("\n=== Feature comparison ===")
+    print(f"\n=== Results（已寫入 {output_path}）===")
     for row in rows:
         print(row)
 
