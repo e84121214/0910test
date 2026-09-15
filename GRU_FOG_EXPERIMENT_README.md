@@ -43,9 +43,9 @@
 
 ### `train_gru.py`：訓練、選門檻與比較
 
-1. **模型與輔助函式**：`VisibilityGRU` 為單層、64 hidden units 的普通 GRU，取最後 hidden state 經線性層輸出 logit。`evaluate_loss` 算 weighted BCE；`predict_probabilities` 對 logit 套 sigmoid；指標函式計算 TP、FP、FN、TN、precision、POD/recall 與 CSI。
+1. **模型與輔助函式**：`VisibilityGRU` 為單層、32 hidden units 的普通 GRU，取最後 hidden state 經線性層輸出 logit。`evaluate_loss` 算 weighted BCE；`predict_probabilities` 對 logit 套 sigmoid；指標函式計算 TP、FP、FN、TN、precision、POD/recall 與 CSI。
 2. **`choose_threshold`**在 validation 上搜尋 0.05–0.95 的門檻（步長 0.01），選 F0.5 最大值。F0.5 比 F1 更重視 precision；**時間與空間測試資料都不參與門檻選擇**。
-3. **`run_experiment` 資料與訓練區**為指定特徵組合重建相同切分，固定種子 42，用 Adam（學習率 0.001）及 `BCEWithLogitsLoss` 訓練。`pos_weight` 取 `0.5 × 非霧/霧`，但上限設為 5，避免多站霧比例低時過度鼓勵報霧。預設訓練 30 epoch，以 validation weighted BCE 最低的 epoch 保存模型狀態。
+3. **`run_experiment` 資料與訓練區**為指定特徵組合重建相同切分，固定種子 42，用 Adam（學習率 0.001）及 `BCEWithLogitsLoss` 訓練。`pos_weight` 取 `0.5 × 非霧/霧`，但上限設為 5，避免多站霧比例低時過度鼓勵報霧。最多訓練 30 epoch，以 validation weighted BCE 最低的 epoch 保存模型狀態；若 validation loss 連續 5 個 epoch 沒有下降，便提前停止並回復最佳權重。
 4. **評估區**先印 validation 在固定 0.50 與選出門檻下的指標，再用同一選出門檻評估 temporal test 和 `C48` spatial test。兩組測試各自列出 persistence：若輸入最後時刻的**實測**能見度 < 1 km，就猜未來仍有霧。Persistence 使用模型沒有的地面能見度，屬參考基準，不是相同輸入條件的公平模型對照。
 5. **輸出區**為每組產生最佳權重、loss 曲線，`main()` 再把三組的兩種測試結果合併為一份 CSV。CSV 使用各組在 validation 選出的門檻；各組門檻可以不同。
 

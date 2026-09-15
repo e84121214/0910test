@@ -16,10 +16,12 @@ from create_sequences import (
 
 POS_WEIGHT_SCALE = 0.5  # 1.0 為原本的反類別比例權重；調低可減少漏報懲罰
 POS_WEIGHT_CAP = 5.0  # 多站霧比例更低，避免正類權重暴增而大量誤報
+HIDDEN_SIZE = 32
+EARLY_STOPPING_PATIENCE = 5
 
 
 class VisibilityGRU(nn.Module):
-    def __init__(self, input_size, hidden_size=64, num_layers=1):
+    def __init__(self, input_size, hidden_size=HIDDEN_SIZE, num_layers=1):
         super().__init__()
         self.gru = nn.GRU(input_size, hidden_size, num_layers, batch_first=True)
         self.fc = nn.Linear(hidden_size, 1)
@@ -111,6 +113,7 @@ def run_experiment(feature_mode, epochs, device):
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     train_losses, val_losses = [], []
     best_val_loss, best_epoch, best_state = float("inf"), 0, None
+    epochs_without_improvement = 0
     for epoch in range(1, epochs + 1):
         model.train()
         loss_sum = 0.0
@@ -128,7 +131,16 @@ def run_experiment(feature_mode, epochs, device):
         if val_loss < best_val_loss:
             best_val_loss, best_epoch = val_loss, epoch
             best_state = copy.deepcopy(model.state_dict())
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
         print(f"Epoch {epoch:02d}/{epochs} | Train BCE: {train_loss:.4f} | Val BCE: {val_loss:.4f}")
+        if epochs_without_improvement >= EARLY_STOPPING_PATIENCE:
+            print(
+                f"Early stopping：Validation BCE 已連續 {EARLY_STOPPING_PATIENCE} 個 epoch "
+                f"未改善；停止於 epoch {epoch}"
+            )
+            break
 
     model.load_state_dict(best_state)
     torch.save(best_state, f"best_gru_fog_{feature_mode.lower()}_model.pt")
@@ -157,8 +169,9 @@ def run_experiment(feature_mode, epochs, device):
                   datasets["spatial_test"].persistence < FOG_THRESHOLD_KM)
 
     plt.figure(figsize=(10, 6))
-    plt.plot(range(1, epochs + 1), train_losses, label="Training Loss")
-    plt.plot(range(1, epochs + 1), val_losses, label="Validation Loss")
+    completed_epochs = range(1, len(train_losses) + 1)
+    plt.plot(completed_epochs, train_losses, label="Training Loss")
+    plt.plot(completed_epochs, val_losses, label="Validation Loss")
     plt.axvline(best_epoch, linestyle="--", label=f"Best Epoch = {best_epoch}")
     plt.xlabel("Epoch")
     plt.ylabel("Weighted BCE Loss")
