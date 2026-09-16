@@ -9,9 +9,13 @@ wheels/
 # Virtual environments
 .venv
 
-#data set
-visibility_satellite_2023_clean.parquet
+# Data sets
+來源資料/**/*.parquet
 
 
 *.pt
 training_validation_loss*.png
+
+# 不上傳兩個原始資料資料夾
+/來源資料/亮溫差資料建立/
+/來源資料/第一階段可交付成果_2023*/

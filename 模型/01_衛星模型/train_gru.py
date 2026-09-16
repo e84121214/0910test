@@ -3,6 +3,8 @@
 import copy
 import csv
 import argparse
+import json
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,11 +14,15 @@ from torch.utils.data import DataLoader
 
 from create_sequences import (
     BATCH_SIZE, FEATURE_SETS, FOG_THRESHOLD_KM, build_datasets,
+    DATA_PATH, DATA_SOURCE, LOOKBACK, HORIZON, PROJECT_DIR, SPATIAL_TEST_STATION,
+    VALIDATION_MONTHS, TEMPORAL_TEST_MONTHS,
 )
+
+MODEL_DIR = Path(__file__).resolve().parent
 
 POS_WEIGHT_SCALE = 0.5  # 1.0 為原本的反類別比例權重；調低可減少漏報懲罰
 POS_WEIGHT_CAP = 5.0  # 多站霧比例更低，避免正類權重暴增而大量誤報
-HIDDEN_SIZE = 32
+HIDDEN_SIZE = 64
 EARLY_STOPPING_PATIENCE = 5
 
 
@@ -88,7 +94,9 @@ def choose_threshold(actual, probabilities):
     return best_threshold, best_score
 
 
-def run_experiment(feature_mode, epochs, device):
+def run_experiment(feature_mode, epochs, device, output_dir):
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n{'=' * 20} {feature_mode} {'=' * 20}")
     torch.manual_seed(42)
     np.random.seed(42)
@@ -143,11 +151,29 @@ def run_experiment(feature_mode, epochs, device):
             break
 
     model.load_state_dict(best_state)
-    torch.save(best_state, f"best_gru_fog_{feature_mode.lower()}_model.pt")
+    torch.save(best_state, output_dir / f"best_gru_fog_{feature_mode.lower()}_model.pt")
     print(f"Best Epoch: {best_epoch}; Best Validation weighted BCE: {best_val_loss:.4f}")
     val_probabilities, val_actual = predict_probabilities(model, val_loader, device)
     # 門檻只從 validation 選，temporal/spatial test 都不能參與調整。
     threshold, val_f05 = choose_threshold(val_actual, val_probabilities)
+    metadata = {
+        "mode": feature_mode, "features": features,
+        "data_path": str(DATA_PATH.relative_to(PROJECT_DIR)),
+        "data_source": DATA_SOURCE, "mean": datasets["train"].mean.tolist(),
+        "std": datasets["train"].std.tolist(), "threshold": threshold,
+        "lookback": LOOKBACK, "horizon": HORIZON, "fog_threshold_km": FOG_THRESHOLD_KM,
+        "hidden_size": HIDDEN_SIZE, "num_layers": 1, "seed": 42,
+        "spatial_test_station": SPATIAL_TEST_STATION,
+        "validation_months": sorted(VALIDATION_MONTHS),
+        "temporal_test_months": sorted(TEMPORAL_TEST_MONTHS),
+        "best_epoch": best_epoch, "best_val_loss": best_val_loss,
+        "completed_epochs": len(train_losses), "pos_weight": pos_weight.item(),
+        "train_losses": train_losses, "val_losses": val_losses,
+    }
+    with (output_dir / f"gru_fog_{feature_mode.lower()}_metadata.json").open(
+        "w", encoding="utf-8"
+    ) as file:
+        json.dump(metadata, file, ensure_ascii=False, indent=2)
     print(f"Validation F0.5 最佳門檻：{threshold:.2f}（F0.5={val_f05:.4f}）")
     print_metrics("GRU Validation @ 0.50", val_actual, val_probabilities >= 0.5)
     print_metrics("GRU Validation @ selected threshold", val_actual, val_probabilities >= threshold)
@@ -179,7 +205,7 @@ def run_experiment(feature_mode, epochs, device):
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig(f"training_validation_loss_fog_{feature_mode.lower()}.png", dpi=300)
+    plt.savefig(output_dir / f"training_validation_loss_fog_{feature_mode.lower()}.png", dpi=300)
     plt.close()
     return [
         {"mode": feature_mode, "split": "temporal_test", "features": len(features),
@@ -194,10 +220,12 @@ def parse_args():
     parser.add_argument(
         "--mode",
         choices=["ALL", *FEATURE_SETS],
-        default="ALL",
-        help="選擇單一特徵組合；預設 ALL 依序執行三組",
+        default="SAT",
+        help="目前提供 SAT：16 波段、6 波段差、時間及地理特徵；ALL 執行所有已實作組合",
     )
     parser.add_argument("--epochs", type=int, default=30, help="每組訓練 epoch 數")
+    parser.add_argument("--output-dir", type=Path, default=MODEL_DIR / "results",
+                        help="新實驗輸出目錄，與原有實驗結果分開")
     return parser.parse_args()
 
 
@@ -210,8 +238,8 @@ def main():
     modes = list(FEATURE_SETS) if args.mode == "ALL" else [args.mode]
     rows = []
     for mode in modes:
-        rows.extend(run_experiment(mode, args.epochs, device))
-    output_path = (
+        rows.extend(run_experiment(mode, args.epochs, device, args.output_dir))
+    output_path = args.output_dir / (
         "fog_feature_comparison.csv" if args.mode == "ALL"
         else f"fog_feature_results_{args.mode.lower()}.csv"
     )

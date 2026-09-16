@@ -1,6 +1,9 @@
+from pathlib import Path
+
 import polars as pl
 
-DATA_PATH = "visibility_satellite_2023_clean.parquet"
+PROJECT_DIR = Path(__file__).resolve().parents[3]
+DATA_PATH = PROJECT_DIR / "來源資料" / "visibility_satellite_2023_clean.parquet"
 
 df = pl.read_parquet(DATA_PATH)
 '''

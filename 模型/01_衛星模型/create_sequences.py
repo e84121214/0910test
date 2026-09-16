@@ -4,24 +4,30 @@ Temporal test uses training stations in June/December. Spatial test uses the
 held-out station in training months, so only the station changes.
 """
 
+from pathlib import Path
+
 import numpy as np
 import polars as pl
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-DATA_PATH = "visibility_satellite_2023_clean.parquet"
+MODEL_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = MODEL_DIR.parents[1]
+DATA_PATH = PROJECT_DIR / "來源資料" / "visibility_satellite_2023_btd.parquet"
 DATA_SOURCE = "ACOS"  # ACOS stations have the same stated visibility ceiling
 SPATIAL_TEST_STATION = "C48"
 LOOKBACK = 18
 HORIZON = 6
 FOG_THRESHOLD_KM = 1.0
 SATELLITE_FEATURES = [f"B{i:02d}" for i in range(1, 17)]
+BAND_DIFFERENCE_FEATURES = [
+    "B07_minus_B14", "B07_minus_B13", "B11_minus_B15",
+    "B13_minus_B15", "B14_minus_B15", "B15_minus_B16",
+]
 TIME_FEATURES = ["hour_sin", "hour_cos", "month_sin", "month_cos"]
 GEO_FEATURES = ["Latitude", "Longitude", "Elevation_m"]
 FEATURE_SETS = {
-    "SAT": SATELLITE_FEATURES,
-    "SAT_TIME": SATELLITE_FEATURES + TIME_FEATURES,
-    "SAT_TIME_GEO": SATELLITE_FEATURES + TIME_FEATURES + GEO_FEATURES,
+    "SAT": SATELLITE_FEATURES + BAND_DIFFERENCE_FEATURES + TIME_FEATURES + GEO_FEATURES,
 }
 VALIDATION_MONTHS = {3, 9}
 TEMPORAL_TEST_MONTHS = {6, 12}
@@ -60,7 +66,10 @@ def build_datasets(feature_mode="SAT"):
         raise ValueError(f"未知的特徵組合：{feature_mode}")
     feature_names = FEATURE_SETS[feature_mode]
     columns = ["Station_ID", "Data_Source", "DateTime_UTC0", "Visibility_km",
-               *SATELLITE_FEATURES, *GEO_FEATURES]
+               *[name for name in feature_names if name not in TIME_FEATURES]]
+    missing = set(columns) - set(pl.read_parquet_schema(DATA_PATH))
+    if missing:
+        raise ValueError(f"Missing required columns in {DATA_PATH}: {sorted(missing)}")
     df = pl.read_parquet(DATA_PATH, columns=columns).filter(pl.col("Data_Source") == DATA_SOURCE)
     local_time = pl.col("DateTime_UTC0") + pl.duration(hours=8)
     hour_angle = (local_time.dt.hour() + local_time.dt.minute() / 60) * (2 * np.pi / 24)
@@ -151,7 +160,7 @@ def build_datasets(feature_mode="SAT"):
 
 
 if __name__ == "__main__":
-    datasets, feature_names = build_datasets("SAT_TIME_GEO")
+    datasets, feature_names = build_datasets("SAT")
     train_loader = DataLoader(datasets["train"], batch_size=BATCH_SIZE, shuffle=True)
     x, y = next(iter(train_loader))
     print("第一個 batch:", x.shape, y.shape, feature_names)

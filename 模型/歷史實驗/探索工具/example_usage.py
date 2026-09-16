@@ -8,23 +8,28 @@
 #  方法一：Polars（推薦）
 # =============================================
 # pip install polars
+from pathlib import Path
+
 import polars as pl
 
+PROJECT_DIR = Path(__file__).resolve().parents[3]
+DATA_PATH = PROJECT_DIR / "來源資料" / "visibility_satellite_2023_clean.parquet"
+
 # 讀取全部資料（~1秒，記憶體 ~300MB）
-df = pl.read_parquet("visibility_satellite_2023_clean.parquet")
+df = pl.read_parquet(DATA_PATH)
 print(f"Shape: {df.shape}")
 print(f"Columns: {df.columns}")
 print(df.head())
 
 # 讀取部分欄位（更快更省記憶體）
 df_small = pl.read_parquet(
-    "visibility_satellite_2023_clean.parquet",
+    DATA_PATH,
     columns=["Station_ID", "DateTime_UTC0", "Visibility_km", "B13", "B14", "B15"]
 )
 
 # Lazy 模式：適合大資料篩選，不會一次全讀進記憶體
 df_fog = (
-    pl.scan_parquet("visibility_satellite_2023_clean.parquet")
+    pl.scan_parquet(DATA_PATH)
     .filter(pl.col("is_fog") == 1)
     .collect()
 )
@@ -38,7 +43,7 @@ print(f"Fog events: {df_fog.shape[0]}")
 import pandas as pd
 
 # 讀 Parquet（~3-5秒，記憶體 ~800MB-1GB）
-df_pd = pd.read_parquet("visibility_satellite_2023_clean.parquet")
+df_pd = pd.read_parquet(DATA_PATH)
 print(f"Shape: {df_pd.shape}")
 print(f"Memory: {df_pd.memory_usage(deep=True).sum() / 1024**2:.0f} MB")
 

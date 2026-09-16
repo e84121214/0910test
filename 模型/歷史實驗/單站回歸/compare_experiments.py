@@ -15,7 +15,8 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 
-DATA_PATH = Path("visibility_satellite_2023_clean.parquet")
+PROJECT_DIR = Path(__file__).resolve().parents[3]
+DATA_PATH = PROJECT_DIR / "來源資料" / "visibility_satellite_2023_clean.parquet"
 FEATURES = [f"B{i:02d}" for i in range(1, 17)]
 TEST_MONTHS = {6, 12}
 VALIDATION_SCHEMES = {"march_september": {3, 9}, "october": {10}}
