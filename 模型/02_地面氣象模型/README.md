@@ -70,4 +70,4 @@ weight(v, j, t, feature) = raw_weight(v, j) / sum(raw_weight of valid neighbors)
 
 C48 幾乎無法偵測霧，尚不能宣稱地面模型具有跨站泛化能力。以上門檻只由 validation 選擇，兩個 test 均未參與調整。
 
-目前 `模型/01_衛星模型/results` 中衛星模型的 metadata 記錄為 128 hidden units，但現行 `train_gru.py` 設為 64；因此現有兩組產物不可作為最終的同架構比較。地面模型已按現行 64-unit 設定完成，衛星模型之後應以其獨立程式重新訓練，再彙整正式比較表。
+衛星、地面及混合模型的本次正式產物均使用 64 hidden units；完整的同架構比較見 `模型/三種GRU霧預測模型_實驗結果說明.md`。
