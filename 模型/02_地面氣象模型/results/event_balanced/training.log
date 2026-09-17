@@ -1,0 +1,90 @@
+Using device: cuda
+GROUND features: 49；資料來源：ACOS；能見度站：26；保留站配對：182；氣象站：158；距離權重：exp(-d/5)
+C01: train=5780/1霧, val=1556/0霧, temporal_test=1587/1霧
+C02: train=4949/4霧, val=1434/1霧, temporal_test=1238/0霧
+C05: train=5727/0霧, val=1533/0霧, temporal_test=1586/0霧
+C06: train=5794/834霧, val=1527/230霧, temporal_test=1588/200霧
+C08: train=5774/1霧, val=1512/0霧, temporal_test=1585/0霧
+C09: train=5762/23霧, val=1509/22霧, temporal_test=1593/4霧
+C11: train=5291/2霧, val=1524/2霧, temporal_test=1565/1霧
+C12: train=5678/207霧, val=1516/53霧, temporal_test=1582/76霧
+C13: train=5636/737霧, val=1520/101霧, temporal_test=1570/111霧
+C15: train=5720/11霧, val=1523/10霧, temporal_test=1588/13霧
+C16: train=5755/8霧, val=1523/3霧, temporal_test=1567/4霧
+C17: train=5229/5霧, val=1301/3霧, temporal_test=1354/0霧
+C18: train=5687/5霧, val=1518/0霧, temporal_test=1580/1霧
+C19: train=5772/4霧, val=1555/0霧, temporal_test=1603/0霧
+C21: train=5638/7霧, val=1437/1霧, temporal_test=1587/3霧
+C22: train=5395/7霧, val=1484/25霧, temporal_test=1572/7霧
+C23: train=5690/3霧, val=1546/12霧, temporal_test=1553/2霧
+C24: train=5702/1霧, val=1488/1霧, temporal_test=1552/3霧
+C25: train=5179/0霧, val=1527/0霧, temporal_test=1557/0霧
+C26: train=5802/4霧, val=1553/0霧, temporal_test=1582/0霧
+C27: train=5554/0霧, val=1493/0霧, temporal_test=1503/0霧
+C41: train=5556/6霧, val=1474/0霧, temporal_test=1534/11霧
+C47: train=5745/109霧, val=1478/12霧, temporal_test=1572/0霧
+C48: spatial_test=5782/94霧
+C52: train=5739/2霧, val=1520/0霧, temporal_test=1575/0霧
+C58: train=5736/11霧, val=1464/13霧, temporal_test=1571/0霧
+train: 140290 sequences, 1992 fog targets, 25 stations
+val: 37515 sequences, 489 fog targets, 25 stations
+temporal_test: 38744 sequences, 437 fog targets, 25 stations
+spatial_test: 5782 sequences, 94 fog targets, 1 stations
+Training sampling：event_balanced；equal mass per contiguous positive event; original class mass preserved
+Train 霧樣本：1992 / 140290；pos_weight：5.00
+Epoch 01/30 | Train BCE: 0.1393 | Val BCE: 0.1031
+Epoch 02/30 | Train BCE: 0.1144 | Val BCE: 0.1057
+Epoch 03/30 | Train BCE: 0.1038 | Val BCE: 0.1121
+Epoch 04/30 | Train BCE: 0.0940 | Val BCE: 0.1180
+Epoch 05/30 | Train BCE: 0.0924 | Val BCE: 0.1189
+Epoch 06/30 | Train BCE: 0.0865 | Val BCE: 0.1197
+Early stopping：Validation BCE 已連續 5 個 epoch 未改善；停止於 epoch 6
+Best Epoch: 1; Best Validation weighted BCE: 0.1031
+Validation F1 最佳門檻：0.54（F1=0.4566）
+
+=== Ground GRU Validation @ 0.50 ===
+霧樣本：489 / 37515
+TP: 315, FP: 595, FN: 174, TN: 36431
+Precision: 0.3462, POD/Recall: 0.6442, CSI: 0.2906
+
+=== Ground GRU Validation @ selected threshold ===
+霧樣本：489 / 37515
+TP: 292, FP: 498, FN: 197, TN: 36528
+Precision: 0.3696, POD/Recall: 0.5971, CSI: 0.2958
+Temporal Test weighted BCE: 0.0981
+
+=== Ground GRU Temporal Test @ 0.50 ===
+霧樣本：437 / 38744
+TP: 295, FP: 647, FN: 142, TN: 37660
+Precision: 0.3132, POD/Recall: 0.6751, CSI: 0.2721
+
+=== Ground GRU Temporal Test ===
+霧樣本：437 / 38744
+TP: 267, FP: 518, FN: 170, TN: 37789
+Precision: 0.3401, POD/Recall: 0.6110, CSI: 0.2796
+
+=== Persistence Temporal Test ===
+霧樣本：437 / 38744
+TP: 238, FP: 209, FN: 199, TN: 38098
+Precision: 0.5324, POD/Recall: 0.5446, CSI: 0.3684
+Spatial Test weighted BCE: 0.3052
+
+=== Ground GRU Spatial Test @ 0.50 ===
+霧樣本：94 / 5782
+TP: 0, FP: 0, FN: 94, TN: 5688
+Precision: 0.0000, POD/Recall: 0.0000, CSI: 0.0000
+
+=== Ground GRU Spatial Test ===
+霧樣本：94 / 5782
+TP: 0, FP: 0, FN: 94, TN: 5688
+Precision: 0.0000, POD/Recall: 0.0000, CSI: 0.0000
+
+=== Persistence Spatial Test ===
+霧樣本：94 / 5782
+TP: 51, FP: 38, FN: 43, TN: 5650
+Precision: 0.5730, POD/Recall: 0.5426, CSI: 0.3864
+C48 門檻明細與三張曲線已寫入：模型\02_地面氣象模型\results\event_balanced
+
+=== Results（已寫入 模型\02_地面氣象模型\results\event_balanced\ground_weather_results.csv）===
+{'mode': 'GROUND', 'sampling': 'event_balanced', 'split': 'temporal_test', 'features': 49, 'best_epoch': 1, 'threshold': 0.5400000000000001, 'tp': 267, 'fp': 518, 'fn': 170, 'tn': 37789, 'precision': 0.3401273885350318, 'pod': 0.6109839816933639, 'csi': 0.27958115183246074}
+{'mode': 'GROUND', 'sampling': 'event_balanced', 'split': 'spatial_test', 'features': 49, 'best_epoch': 1, 'threshold': 0.5400000000000001, 'tp': 0, 'fp': 0, 'fn': 94, 'tn': 5688, 'precision': 0.0, 'pod': 0.0, 'csi': 0.0}

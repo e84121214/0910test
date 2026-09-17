@@ -1,0 +1,92 @@
+Using device: cuda
+
+==================== SAT ====================
+特徵組合：SAT (29 features)；資料來源：ACOS；測站數：26；保留站：C48
+C01: train=5780/1霧, val=1556/0霧, temporal_test=1587/1霧
+C02: train=4949/4霧, val=1434/1霧, temporal_test=1238/0霧
+C05: train=5727/0霧, val=1533/0霧, temporal_test=1586/0霧
+C06: train=5794/834霧, val=1527/230霧, temporal_test=1588/200霧
+C08: train=5774/1霧, val=1512/0霧, temporal_test=1585/0霧
+C09: train=5762/23霧, val=1509/22霧, temporal_test=1593/4霧
+C11: train=5291/2霧, val=1524/2霧, temporal_test=1565/1霧
+C12: train=5678/207霧, val=1516/53霧, temporal_test=1582/76霧
+C13: train=5636/737霧, val=1520/101霧, temporal_test=1570/111霧
+C15: train=5720/11霧, val=1523/10霧, temporal_test=1588/13霧
+C16: train=5755/8霧, val=1523/3霧, temporal_test=1567/4霧
+C17: train=5229/5霧, val=1301/3霧, temporal_test=1354/0霧
+C18: train=5687/5霧, val=1518/0霧, temporal_test=1580/1霧
+C19: train=5772/4霧, val=1555/0霧, temporal_test=1603/0霧
+C21: train=5638/7霧, val=1437/1霧, temporal_test=1587/3霧
+C22: train=5395/7霧, val=1484/25霧, temporal_test=1572/7霧
+C23: train=5690/3霧, val=1546/12霧, temporal_test=1553/2霧
+C24: train=5702/1霧, val=1488/1霧, temporal_test=1552/3霧
+C25: train=5179/0霧, val=1527/0霧, temporal_test=1557/0霧
+C26: train=5802/4霧, val=1553/0霧, temporal_test=1582/0霧
+C27: train=5554/0霧, val=1493/0霧, temporal_test=1503/0霧
+C41: train=5556/6霧, val=1474/0霧, temporal_test=1534/11霧
+C47: train=5745/109霧, val=1478/12霧, temporal_test=1572/0霧
+C48: spatial_test=5782/94霧
+C52: train=5739/2霧, val=1520/0霧, temporal_test=1575/0霧
+C58: train=5736/11霧, val=1464/13霧, temporal_test=1571/0霧
+train: 140290 sequences, 1992 fog targets, 25 stations
+val: 37515 sequences, 489 fog targets, 25 stations
+temporal_test: 38744 sequences, 437 fog targets, 25 stations
+spatial_test: 5782 sequences, 94 fog targets, 1 stations
+Training sampling：event_balanced；equal mass per contiguous positive event; original class mass preserved
+Train 霧樣本：1992 / 140290；pos_weight：5.00
+Epoch 01/30 | Train BCE: 0.1498 | Val BCE: 0.1222
+Epoch 02/30 | Train BCE: 0.1266 | Val BCE: 0.1260
+Epoch 03/30 | Train BCE: 0.1144 | Val BCE: 0.1224
+Epoch 04/30 | Train BCE: 0.1056 | Val BCE: 0.1244
+Epoch 05/30 | Train BCE: 0.1036 | Val BCE: 0.1315
+Epoch 06/30 | Train BCE: 0.0998 | Val BCE: 0.1333
+Early stopping：Validation BCE 已連續 5 個 epoch 未改善；停止於 epoch 6
+Best Epoch: 1; Best Validation weighted BCE: 0.1222
+Validation F1 最佳門檻：0.61（F1=0.3414）
+
+=== GRU Validation @ 0.50 ===
+霧樣本：489 / 37515
+TP: 250, FP: 793, FN: 239, TN: 36233
+Precision: 0.2397, POD/Recall: 0.5112, CSI: 0.1950
+
+=== GRU Validation @ selected threshold ===
+霧樣本：489 / 37515
+TP: 184, FP: 405, FN: 305, TN: 36621
+Precision: 0.3124, POD/Recall: 0.3763, CSI: 0.2058
+Test weighted BCE: 0.1145
+
+=== GRU Test @ 0.50 ===
+霧樣本：437 / 38744
+TP: 212, FP: 717, FN: 225, TN: 37590
+Precision: 0.2282, POD/Recall: 0.4851, CSI: 0.1837
+
+=== GRU Test ===
+霧樣本：437 / 38744
+TP: 126, FP: 217, FN: 311, TN: 38090
+Precision: 0.3673, POD/Recall: 0.2883, CSI: 0.1927
+
+=== Persistence Test ===
+霧樣本：437 / 38744
+TP: 238, FP: 209, FN: 199, TN: 38098
+Precision: 0.5324, POD/Recall: 0.5446, CSI: 0.3684
+Spatial Test weighted BCE: 0.4077
+
+=== GRU Spatial Test @ 0.50 ===
+霧樣本：94 / 5782
+TP: 0, FP: 0, FN: 94, TN: 5688
+Precision: 0.0000, POD/Recall: 0.0000, CSI: 0.0000
+
+=== GRU Spatial Test ===
+霧樣本：94 / 5782
+TP: 0, FP: 0, FN: 94, TN: 5688
+Precision: 0.0000, POD/Recall: 0.0000, CSI: 0.0000
+
+=== Persistence Spatial Test ===
+霧樣本：94 / 5782
+TP: 51, FP: 38, FN: 43, TN: 5650
+Precision: 0.5730, POD/Recall: 0.5426, CSI: 0.3864
+C48 門檻明細與三張曲線已寫入：模型\01_衛星模型\results\event_balanced
+
+=== Results（已寫入 模型\01_衛星模型\results\event_balanced\fog_feature_results_sat.csv）===
+{'mode': 'SAT', 'sampling': 'event_balanced', 'split': 'temporal_test', 'features': 29, 'best_epoch': 1, 'threshold': 0.6100000000000001, 'tp': 126, 'fp': 217, 'fn': 311, 'tn': 38090, 'precision': 0.3673469387755102, 'pod': 0.28832951945080093, 'csi': 0.1926605504587156}
+{'mode': 'SAT', 'sampling': 'event_balanced', 'split': 'spatial_test', 'features': 29, 'best_epoch': 1, 'threshold': 0.6100000000000001, 'tp': 0, 'fp': 0, 'fn': 94, 'tn': 5688, 'precision': 0.0, 'pod': 0.0, 'csi': 0.0}
