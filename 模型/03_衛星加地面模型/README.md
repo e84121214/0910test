@@ -45,14 +45,16 @@
 - `combined_results.csv`
 - `training_validation_loss_combined.png`
 - `training.log`
+- `combined_spatial_threshold_metrics.csv`：C48 在 0.00–1.00 共 101 個門檻下的完整指標。
+- `combined_spatial_threshold_precision.png`、`combined_spatial_threshold_recall.png`、`combined_spatial_threshold_csi.png`：C48 門檻診斷曲線。
 
 ## 本次結果
 
-模型使用單層 GRU、64 hidden units、種子 42。訓練最多 30 輪，於第 8 輪提前停止，最佳權重為第 3 輪；validation 以 F0.5 選出的門檻為 0.78。
+模型使用單層 GRU、64 hidden units、種子 42。訓練最多 30 輪，於第 8 輪提前停止，最佳權重為第 3 輪；validation 以 F1 選出的門檻為 0.61。
 
 | 測試集 | TP | FP | FN | Precision | Recall | CSI |
 |---|---:|---:|---:|---:|---:|---:|
-| Temporal test | 214 | 251 | 223 | 46.02% | 48.97% | 31.10% |
-| Spatial test C48 | 6 | 64 | 88 | 8.57% | 6.38% | 3.80% |
+| Temporal test | 283 | 572 | 154 | 33.10% | 64.76% | 28.05% |
+| Spatial test C48 | 11 | 92 | 83 | 10.68% | 11.70% | 5.91% |
 
-相較目前 64-unit 純地面模型，混合模型的 temporal CSI 從 27.59% 提升至 31.10%，C48 spatial CSI 從 3.06% 小幅提升至 3.80%。然而 C48 仍只偵測到 6／94 筆霧，跨站泛化仍然不足。兩個 test 均使用 validation 選出的門檻，未參與門檻調整。
+使用 F1 門檻後，混合模型的 temporal Recall 64.76% 高於純地面模型的 58.58%，但 temporal CSI 28.05% 低於純地面的 32.20%。C48 只偵測到 11／94 筆霧，跨站泛化仍然不足。兩個 test 均使用 validation 選出的門檻，未參與門檻調整。

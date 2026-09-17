@@ -6,6 +6,8 @@ import csv
 import json
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -35,6 +37,7 @@ POS_WEIGHT_SCALE = 0.5
 POS_WEIGHT_CAP = 5.0
 HIDDEN_SIZE = 64
 EARLY_STOPPING_PATIENCE = 5
+THRESHOLD_GRID = np.linspace(0.0, 1.0, 101)
 
 
 class GroundWeatherGRU(nn.Module):
@@ -100,10 +103,71 @@ def choose_threshold(actual, probabilities):
     best_score, best_threshold = -1.0, 0.5
     for threshold in np.arange(0.05, 0.951, 0.01):
         tp, fp, fn, _, _, _, _ = classification_metrics(actual, probabilities >= threshold)
-        score = 1.25 * tp / (1.25 * tp + fp + 0.25 * fn) if tp else 0.0
+        score = 2 * tp / (2 * tp + fp + fn) if tp else 0.0
         if score > best_score or (score == best_score and threshold > best_threshold):
             best_score, best_threshold = score, float(threshold)
     return best_threshold, best_score
+
+
+def save_spatial_threshold_analysis(
+    output_dir, file_prefix, model_label, actual, probabilities, selected_threshold
+):
+    rows = []
+    for threshold in THRESHOLD_GRID:
+        tp, fp, fn, tn, precision, pod, csi = classification_metrics(
+            actual, probabilities >= threshold
+        )
+        rows.append({
+            "threshold": float(threshold),
+            "tp": tp,
+            "fp": fp,
+            "fn": fn,
+            "tn": tn,
+            "precision": precision,
+            "recall": pod,
+            "csi": csi,
+        })
+
+    csv_path = output_dir / f"{file_prefix}_spatial_threshold_metrics.csv"
+    with csv_path.open("w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.DictWriter(file, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+
+    for metric, ylabel in (
+        ("precision", "Precision"),
+        ("recall", "Recall"),
+        ("csi", "CSI"),
+    ):
+        plt.figure(figsize=(10, 6))
+        plt.plot(
+            [row["threshold"] for row in rows],
+            [row[metric] for row in rows],
+            linewidth=2,
+        )
+        plt.axvline(0.5, color="gray", linestyle=":", label="Fixed threshold = 0.50")
+        plt.axvline(
+            selected_threshold,
+            color="red",
+            linestyle="--",
+            label=f"Validation F1 threshold = {selected_threshold:.2f}",
+        )
+        plt.xlabel("Classification Threshold")
+        plt.ylabel(ylabel)
+        plt.title(f"{model_label} C48 Spatial Test: {ylabel} by Threshold")
+        plt.xlim(0.0, 1.0)
+        y_max = min(1.0, max(0.1, max(row[metric] for row in rows) * 1.1))
+        plt.ylim(0.0, y_max)
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(
+            output_dir / f"{file_prefix}_spatial_threshold_{metric}.png",
+            dpi=300,
+        )
+        plt.close()
+
+    print(f"C48 門檻明細與三張曲線已寫入：{output_dir}")
 
 
 def run_experiment(epochs, device, output_dir):
@@ -112,7 +176,9 @@ def run_experiment(epochs, device, output_dir):
     np.random.seed(42)
     datasets, features = build_ground_datasets()
     train_loader = DataLoader(
-        datasets["train"], batch_size=BATCH_SIZE, shuffle=True,
+        datasets["train"],
+        batch_size=BATCH_SIZE,
+        shuffle=True,
         generator=torch.Generator().manual_seed(42),
     )
     val_loader = DataLoader(datasets["val"], batch_size=BATCH_SIZE)
@@ -174,8 +240,8 @@ def run_experiment(epochs, device, output_dir):
     print(f"Best Epoch: {best_epoch}; Best Validation weighted BCE: {best_val_loss:.4f}")
 
     val_probabilities, val_actual = predict_probabilities(model, val_loader, device)
-    threshold, val_f05 = choose_threshold(val_actual, val_probabilities)
-    print(f"Validation F0.5 最佳門檻：{threshold:.2f}（F0.5={val_f05:.4f}）")
+    threshold, val_f1 = choose_threshold(val_actual, val_probabilities)
+    print(f"Validation F1 最佳門檻：{threshold:.2f}（F1={val_f1:.4f}）")
     print_metrics("Ground GRU Validation @ 0.50", val_actual, val_probabilities >= 0.5)
     print_metrics(
         "Ground GRU Validation @ selected threshold",
@@ -201,6 +267,11 @@ def run_experiment(epochs, device, output_dir):
     spatial_loss = evaluate_loss(model, spatial_loader, criterion, device)
     spatial_probabilities, spatial_actual = predict_probabilities(model, spatial_loader, device)
     print(f"Spatial Test weighted BCE: {spatial_loss:.4f}")
+    print_metrics(
+        "Ground GRU Spatial Test @ 0.50",
+        spatial_actual,
+        spatial_probabilities >= 0.5,
+    )
     spatial_metrics = print_metrics(
         "Ground GRU Spatial Test",
         spatial_actual,
@@ -210,6 +281,14 @@ def run_experiment(epochs, device, output_dir):
         "Persistence Spatial Test",
         spatial_actual,
         datasets["spatial_test"].persistence < FOG_THRESHOLD_KM,
+    )
+    save_spatial_threshold_analysis(
+        output_dir,
+        "ground",
+        "Ground GRU",
+        spatial_actual,
+        spatial_probabilities,
+        threshold,
     )
 
     metadata = {
@@ -223,6 +302,9 @@ def run_experiment(epochs, device, output_dir):
         "mean": datasets["train"].mean.tolist(),
         "std": datasets["train"].std.tolist(),
         "threshold": threshold,
+        "threshold_selection_metric": "F1",
+        "threshold_selection_score": val_f1,
+        "threshold_search": {"min": 0.05, "max": 0.95, "step": 0.01},
         "lookback": LOOKBACK,
         "horizon": HORIZON,
         "fog_threshold_km": FOG_THRESHOLD_KM,
@@ -258,11 +340,13 @@ def run_experiment(epochs, device, output_dir):
 
     return [
         {
-            "mode": "GROUND", "split": "temporal_test", "features": len(features),
+            "mode": "GROUND",
+            "split": "temporal_test", "features": len(features),
             "best_epoch": best_epoch, "threshold": threshold, **temporal_metrics,
         },
         {
-            "mode": "GROUND", "split": "spatial_test", "features": len(features),
+            "mode": "GROUND",
+            "split": "spatial_test", "features": len(features),
             "best_epoch": best_epoch, "threshold": threshold, **spatial_metrics,
         },
     ]

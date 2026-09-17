@@ -58,16 +58,18 @@ weight(v, j, t, feature) = raw_weight(v, j) / sum(raw_weight of valid neighbors)
 - `ground_weather_results.csv`：時間與空間測試指標。
 - `training_validation_loss_ground_weather.png`：訓練與驗證損失。
 - `training.log`：完整訓練紀錄。
+- `ground_spatial_threshold_metrics.csv`：C48 在 0.00–1.00 共 101 個門檻下的完整指標。
+- `ground_spatial_threshold_precision.png`、`ground_spatial_threshold_recall.png`、`ground_spatial_threshold_csi.png`：C48 門檻診斷曲線。
 
 ## 本次結果
 
-模型使用單層 GRU 與 64 hidden units，和目前 `train_gru.py` 的程式設定一致。訓練最多 30 輪，於第 9 輪提前停止，最佳權重為第 4 輪；驗證集以 F0.5 選出的門檻為 0.88。
+模型使用單層 GRU 與 64 hidden units，和目前 `train_gru.py` 的程式設定一致。訓練最多 30 輪，於第 9 輪提前停止，最佳權重為第 4 輪；驗證集以 F1 選出的門檻為 0.70。
 
 | 測試集 | TP | FP | FN | Precision | Recall | CSI |
 |---|---:|---:|---:|---:|---:|---:|
-| Temporal test | 157 | 132 | 280 | 54.33% | 35.93% | 27.59% |
-| Spatial test C48 | 3 | 4 | 91 | 42.86% | 3.19% | 3.06% |
+| Temporal test | 256 | 358 | 181 | 41.69% | 58.58% | 32.20% |
+| Spatial test C48 | 5 | 32 | 89 | 13.51% | 5.32% | 3.97% |
 
-C48 幾乎無法偵測霧，尚不能宣稱地面模型具有跨站泛化能力。以上門檻只由 validation 選擇，兩個 test 均未參與調整。
+C48 仍只能偵測 5／94 筆霧，尚不能宣稱地面模型具有跨站泛化能力。以上門檻只由 validation 選擇，兩個 test 均未參與調整。
 
 衛星、地面及混合模型的本次正式產物均使用 64 hidden units；完整的同架構比較見 `模型/三種GRU霧預測模型_實驗結果說明.md`。

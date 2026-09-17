@@ -158,7 +158,8 @@
     0.8241945505142212,
     519.9340209960938
   ],
-  "threshold": 0.8800000000000002,
+  "threshold": 0.7000000000000002,
+  "threshold_selection_metric": "F1",
   "lookback": 18,
   "horizon": 6,
   "fog_threshold_km": 1.0,
@@ -199,5 +200,11 @@
     0.11282586670389684,
     0.12060961998518997,
     0.12964339600427877
-  ]
+  ],
+  "threshold_selection_score": 0.502283105022831,
+  "threshold_search": {
+    "min": 0.05,
+    "max": 0.95,
+    "step": 0.01
+  }
 }
