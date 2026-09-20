@@ -33,9 +33,11 @@ from create_ground_sequences import (
 MODEL_DIR = Path(__file__).resolve().parent
 
 
-POS_WEIGHT_SCALE = 0.5
-POS_WEIGHT_CAP = 5.0
+FOCAL_ALPHA = 0.91  # 正類（霧）權重；必須介於 0 與 1
+FOCAL_GAMMA = 1.0
 HIDDEN_SIZE = 64
+DENSE_SIZE = 32
+DENSE_DROPOUT = 0.3
 EARLY_STOPPING_PATIENCE = 5
 THRESHOLD_GRID = np.linspace(0.0, 1.0, 101)
 
@@ -44,10 +46,38 @@ class GroundWeatherGRU(nn.Module):
     def __init__(self, input_size, hidden_size=HIDDEN_SIZE, num_layers=1):
         super().__init__()
         self.gru = nn.GRU(input_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size, 1)
+        self.dense = nn.Linear(hidden_size, DENSE_SIZE)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(DENSE_DROPOUT)
+        self.output = nn.Linear(DENSE_SIZE, 1)
 
     def forward(self, x):
-        return self.fc(self.gru(x)[1][-1])
+        last_hidden = self.gru(x)[1][-1]
+        dense_output = self.relu(self.dense(last_hidden))
+        regularized_output = self.dropout(dense_output)
+        return self.output(regularized_output)
+
+
+class BinaryFocalLossWithLogits(nn.Module):
+    """Binary focal loss where alpha is the positive-class weight."""
+
+    def __init__(self, alpha, gamma=1.0):
+        super().__init__()
+        if not 0.0 < alpha < 1.0:
+            raise ValueError("Focal loss alpha 必須介於 0 與 1 之間")
+        if gamma < 0.0:
+            raise ValueError("Focal loss gamma 不可小於 0")
+        self.alpha = float(alpha)
+        self.gamma = float(gamma)
+
+    def forward(self, logits, targets):
+        bce = nn.functional.binary_cross_entropy_with_logits(
+            logits, targets, reduction="none"
+        )
+        probabilities = torch.sigmoid(logits)
+        p_t = targets * probabilities + (1.0 - targets) * (1.0 - probabilities)
+        alpha_t = targets * self.alpha + (1.0 - targets) * (1.0 - self.alpha)
+        return (alpha_t * (1.0 - p_t).pow(self.gamma) * bce).mean()
 
 
 def evaluate_loss(model, loader, criterion, device):
@@ -189,14 +219,12 @@ def run_experiment(epochs, device, output_dir):
     non_fog_count = len(train_loader.dataset) - fog_count
     if fog_count == 0 or non_fog_count == 0:
         raise ValueError("訓練集須同時包含霧與非霧樣本")
-    pos_weight = torch.tensor(
-        [min(POS_WEIGHT_SCALE * non_fog_count / fog_count, POS_WEIGHT_CAP)],
-        device=device,
-    )
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    criterion = BinaryFocalLossWithLogits(alpha=FOCAL_ALPHA, gamma=FOCAL_GAMMA)
+    positive_class_cost_ratio = FOCAL_ALPHA / (1.0 - FOCAL_ALPHA)
     print(
         f"Train 霧樣本：{fog_count} / {len(train_loader.dataset)}；"
-        f"pos_weight：{pos_weight.item():.2f}"
+        f"Focal Loss alpha：{FOCAL_ALPHA:.4f}；gamma：{FOCAL_GAMMA:g}；"
+        f"正負類成本比：{positive_class_cost_ratio:.2f}:1"
     )
 
     model = GroundWeatherGRU(len(features)).to(device)
@@ -225,19 +253,19 @@ def run_experiment(epochs, device, output_dir):
         else:
             epochs_without_improvement += 1
         print(
-            f"Epoch {epoch:02d}/{epochs} | Train BCE: {train_loss:.4f} | "
-            f"Val BCE: {val_loss:.4f}"
+            f"Epoch {epoch:02d}/{epochs} | Train Focal: {train_loss:.4f} | "
+            f"Val Focal: {val_loss:.4f}"
         )
         if epochs_without_improvement >= EARLY_STOPPING_PATIENCE:
             print(
-                f"Early stopping：Validation BCE 已連續 {EARLY_STOPPING_PATIENCE} "
+                f"Early stopping：Validation Focal Loss 已連續 {EARLY_STOPPING_PATIENCE} "
                 f"個 epoch 未改善；停止於 epoch {epoch}"
             )
             break
 
     model.load_state_dict(best_state)
     torch.save(best_state, output_dir / "best_ground_weather_gru_model.pt")
-    print(f"Best Epoch: {best_epoch}; Best Validation weighted BCE: {best_val_loss:.4f}")
+    print(f"Best Epoch: {best_epoch}; Best Validation Focal Loss: {best_val_loss:.4f}")
 
     val_probabilities, val_actual = predict_probabilities(model, val_loader, device)
     threshold, val_f1 = choose_threshold(val_actual, val_probabilities)
@@ -251,7 +279,7 @@ def run_experiment(epochs, device, output_dir):
 
     temporal_loss = evaluate_loss(model, temporal_loader, criterion, device)
     temporal_probabilities, temporal_actual = predict_probabilities(model, temporal_loader, device)
-    print(f"Temporal Test weighted BCE: {temporal_loss:.4f}")
+    print(f"Temporal Test Focal Loss: {temporal_loss:.4f}")
     print_metrics("Ground GRU Temporal Test @ 0.50", temporal_actual, temporal_probabilities >= 0.5)
     temporal_metrics = print_metrics(
         "Ground GRU Temporal Test",
@@ -266,7 +294,7 @@ def run_experiment(epochs, device, output_dir):
 
     spatial_loss = evaluate_loss(model, spatial_loader, criterion, device)
     spatial_probabilities, spatial_actual = predict_probabilities(model, spatial_loader, device)
-    print(f"Spatial Test weighted BCE: {spatial_loss:.4f}")
+    print(f"Spatial Test Focal Loss: {spatial_loss:.4f}")
     print_metrics(
         "Ground GRU Spatial Test @ 0.50",
         spatial_actual,
@@ -309,6 +337,9 @@ def run_experiment(epochs, device, output_dir):
         "horizon": HORIZON,
         "fog_threshold_km": FOG_THRESHOLD_KM,
         "hidden_size": HIDDEN_SIZE,
+        "dense_size": DENSE_SIZE,
+        "dense_activation": "ReLU",
+        "dense_dropout": DENSE_DROPOUT,
         "num_layers": 1,
         "seed": 42,
         "spatial_test_station": SPATIAL_TEST_STATION,
@@ -317,7 +348,10 @@ def run_experiment(epochs, device, output_dir):
         "best_epoch": best_epoch,
         "best_val_loss": best_val_loss,
         "completed_epochs": len(train_losses),
-        "pos_weight": pos_weight.item(),
+        "loss_function": "BinaryFocalLossWithLogits",
+        "focal_alpha": FOCAL_ALPHA,
+        "focal_gamma": FOCAL_GAMMA,
+        "positive_class_cost_ratio": positive_class_cost_ratio,
         "train_losses": train_losses,
         "val_losses": val_losses,
     }
@@ -330,8 +364,8 @@ def run_experiment(epochs, device, output_dir):
     plt.plot(completed_epochs, val_losses, label="Validation Loss")
     plt.axvline(best_epoch, linestyle="--", label=f"Best Epoch = {best_epoch}")
     plt.xlabel("Epoch")
-    plt.ylabel("Weighted BCE Loss")
-    plt.title("Ground-weather GRU Fog Detection Loss")
+    plt.ylabel("Focal Loss")
+    plt.title("Ground-weather GRU Focal Loss")
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()

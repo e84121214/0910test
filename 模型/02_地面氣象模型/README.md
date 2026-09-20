@@ -2,6 +2,8 @@
 
 這是三個目標模型中的第二組 `GROUND`。訓練入口為 `train_ground_gru.py`，資料序列與空間聚合由 `create_ground_sequences.py` 建立；第一組衛星模型的 `train_gru.py` 未因本模型而修改。
 
+目前訓練架構已與混合模型對齊：`GRU hidden state (64) → Dense (32) → ReLU → Dropout (0.3) → Dense (1 logit)`，並使用 binary Focal Loss：`alpha=0.91`、`gamma=1.0`，正負類成本比約為 10.11:1，且不另外使用 `pos_weight`。若要比較其他設定，可直接修改 `train_ground_gru.py` 上方的相關常數。
+
 ## 模型輸入
 
 模型不輸入任何衛星波段、波段差、氣象站能見度 `VS01`，也不輸入能見度儀當下的 `Visibility_km`。`Visibility_km` 僅用於未來霧標籤及 persistence 參考基準。
@@ -62,6 +64,8 @@ weight(v, j, t, feature) = raw_weight(v, j) / sum(raw_weight of valid neighbors)
 - `ground_spatial_threshold_precision.png`、`ground_spatial_threshold_recall.png`、`ground_spatial_threshold_csi.png`：C48 門檻診斷曲線。
 
 ## 本次結果
+
+> 下列數值是修改 Focal Loss 前留下的歷史結果；重新訓練後應以 `results/` 最新輸出更新本節。
 
 模型使用單層 GRU 與 64 hidden units，和目前 `train_gru.py` 的程式設定一致。訓練最多 30 輪，於第 9 輪提前停止，最佳權重為第 4 輪；驗證集以 F1 選出的門檻為 0.70。
 

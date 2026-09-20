@@ -2,6 +2,8 @@
 
 這是第三組 `SAT_GROUND` 模型。訓練入口為 `train_combined_gru.py`，序列組合由 `create_combined_sequences.py` 負責；前兩種模型的訓練程式與結果不會被本模型覆寫。
 
+目前模型頭為 `GRU hidden state (64) → Dense (32) → ReLU → Dropout (0.3) → Dense (1 logit)`。新增的 Dense、ReLU 與 Dropout 只套用於混合模型，純衛星與純地面模型暫時維持原本的 GRU 直接輸出架構，以便單獨觀察這項改動。Dropout 只在訓練階段生效，validation 與 test 階段會自動停用。
+
 ## 輸入特徵
 
 總計 71 個特徵：
@@ -30,6 +32,8 @@
 | Spatial test C48 | 5,782 | 94 | 1 |
 
 ## 執行與輸出
+
+目前訓練 loss 已由 weighted BCE 改為 binary Focal Loss：`gamma=1`。`alpha` 採正類（霧）權重定義，並由原本上限 5:1 的正負類成本比換算為 `5 / (5 + 1) = 0.8333`；程式不再同時使用 `pos_weight`，以免正類被重複加權。Focal Loss 的數值尺度與先前 weighted BCE 不同，不能直接用 loss 數字大小比較兩次模型，應比較相同測試集上的 Precision、Recall 與 CSI。
 
 從專案根目錄執行：
 

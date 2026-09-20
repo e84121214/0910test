@@ -2,6 +2,8 @@
 
 這是三個目標模型中的第一組 `SAT`。新的 `SAT` 定義與舊實驗不同，不可將舊 `SAT` 權重當成此模型使用。
 
+目前訓練架構已與混合模型對齊：`GRU hidden state (64) → Dense (32) → ReLU → Dropout (0.3) → Dense (1 logit)`，並使用 binary Focal Loss：`alpha=0.91`、`gamma=1.0`，正負類成本比約為 10.11:1，且不另外使用 `pos_weight`。若要比較其他設定，可直接修改 `train_gru.py` 上方的相關常數。
+
 ## 輸入
 
 - 資料：`visibility_satellite_2023_btd.parquet`，完整保留 clean 檔的原有欄位及逐筆內容。
@@ -37,6 +39,8 @@
 `ALL` 在本程式中執行已定義的衛星特徵組合。地面及混合模型使用各自資料夾內的獨立訓練程式。
 
 ## 本次訓練結果
+
+> 下列數值是修改 Focal Loss 前留下的歷史結果；重新訓練後應以 `results/` 最新輸出更新本節。
 
 本次使用單層 GRU 與 64 hidden units。最多 30 輪的訓練於第 11 輪提前停止，最佳權重為第 6 輪；驗證集以 F1 選出的門檻為 0.50。
 

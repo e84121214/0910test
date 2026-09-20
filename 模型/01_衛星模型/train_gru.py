@@ -22,9 +22,11 @@ from create_sequences import (
 
 MODEL_DIR = Path(__file__).resolve().parent
 
-POS_WEIGHT_SCALE = 0.5  # 1.0 為原本的反類別比例權重；調低可減少漏報懲罰
-POS_WEIGHT_CAP = 5.0  # 多站霧比例更低，避免正類權重暴增而大量誤報
+FOCAL_ALPHA = 0.91  # 正類（霧）權重；必須介於 0 與 1
+FOCAL_GAMMA = 1.0
 HIDDEN_SIZE = 64
+DENSE_SIZE = 32
+DENSE_DROPOUT = 0.3
 EARLY_STOPPING_PATIENCE = 5
 THRESHOLD_GRID = np.linspace(0.0, 1.0, 101)
 
@@ -33,10 +35,38 @@ class VisibilityGRU(nn.Module):
     def __init__(self, input_size, hidden_size=HIDDEN_SIZE, num_layers=1):
         super().__init__()
         self.gru = nn.GRU(input_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size, 1)
+        self.dense = nn.Linear(hidden_size, DENSE_SIZE)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(DENSE_DROPOUT)
+        self.output = nn.Linear(DENSE_SIZE, 1)
 
     def forward(self, x):
-        return self.fc(self.gru(x)[1][-1])  # logits; sigmoid only for probabilities
+        last_hidden = self.gru(x)[1][-1]
+        dense_output = self.relu(self.dense(last_hidden))
+        regularized_output = self.dropout(dense_output)
+        return self.output(regularized_output)  # logits
+
+
+class BinaryFocalLossWithLogits(nn.Module):
+    """Binary focal loss where alpha is the positive-class weight."""
+
+    def __init__(self, alpha, gamma=1.0):
+        super().__init__()
+        if not 0.0 < alpha < 1.0:
+            raise ValueError("Focal loss alpha 必須介於 0 與 1 之間")
+        if gamma < 0.0:
+            raise ValueError("Focal loss gamma 不可小於 0")
+        self.alpha = float(alpha)
+        self.gamma = float(gamma)
+
+    def forward(self, logits, targets):
+        bce = nn.functional.binary_cross_entropy_with_logits(
+            logits, targets, reduction="none"
+        )
+        probabilities = torch.sigmoid(logits)
+        p_t = targets * probabilities + (1.0 - targets) * (1.0 - probabilities)
+        alpha_t = targets * self.alpha + (1.0 - targets) * (1.0 - self.alpha)
+        return (alpha_t * (1.0 - p_t).pow(self.gamma) * bce).mean()
 
 
 def evaluate_loss(model, loader, criterion, device):
@@ -178,12 +208,13 @@ def run_experiment(feature_mode, epochs, device, output_dir):
     non_fog_count = len(train_loader.dataset) - fog_count
     if fog_count == 0 or non_fog_count == 0:
         raise ValueError("訓練集須同時包含霧與非霧樣本")
-    # 多站霧比例很低；權重設上限，避免一味偏向報霧而產生大量 FP。
-    pos_weight = torch.tensor(
-        [min(POS_WEIGHT_SCALE * non_fog_count / fog_count, POS_WEIGHT_CAP)], device=device
+    criterion = BinaryFocalLossWithLogits(alpha=FOCAL_ALPHA, gamma=FOCAL_GAMMA)
+    positive_class_cost_ratio = FOCAL_ALPHA / (1.0 - FOCAL_ALPHA)
+    print(
+        f"Train 霧樣本：{fog_count} / {len(train_loader.dataset)}；"
+        f"Focal Loss alpha：{FOCAL_ALPHA:.4f}；gamma：{FOCAL_GAMMA:g}；"
+        f"正負類成本比：{positive_class_cost_ratio:.2f}:1"
     )
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    print(f"Train 霧樣本：{fog_count} / {len(train_loader.dataset)}；pos_weight：{pos_weight.item():.2f}")
 
     model = VisibilityGRU(len(features)).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
@@ -210,17 +241,17 @@ def run_experiment(feature_mode, epochs, device, output_dir):
             epochs_without_improvement = 0
         else:
             epochs_without_improvement += 1
-        print(f"Epoch {epoch:02d}/{epochs} | Train BCE: {train_loss:.4f} | Val BCE: {val_loss:.4f}")
+        print(f"Epoch {epoch:02d}/{epochs} | Train Focal: {train_loss:.4f} | Val Focal: {val_loss:.4f}")
         if epochs_without_improvement >= EARLY_STOPPING_PATIENCE:
             print(
-                f"Early stopping：Validation BCE 已連續 {EARLY_STOPPING_PATIENCE} 個 epoch "
+                f"Early stopping：Validation Focal Loss 已連續 {EARLY_STOPPING_PATIENCE} 個 epoch "
                 f"未改善；停止於 epoch {epoch}"
             )
             break
 
     model.load_state_dict(best_state)
     torch.save(best_state, output_dir / f"best_gru_fog_{feature_mode.lower()}_model.pt")
-    print(f"Best Epoch: {best_epoch}; Best Validation weighted BCE: {best_val_loss:.4f}")
+    print(f"Best Epoch: {best_epoch}; Best Validation Focal Loss: {best_val_loss:.4f}")
     val_probabilities, val_actual = predict_probabilities(model, val_loader, device)
     # 門檻只從 validation 選，temporal/spatial test 都不能參與調整。
     threshold, val_f1 = choose_threshold(val_actual, val_probabilities)
@@ -233,12 +264,19 @@ def run_experiment(feature_mode, epochs, device, output_dir):
         "threshold_selection_score": val_f1,
         "threshold_search": {"min": 0.05, "max": 0.95, "step": 0.01},
         "lookback": LOOKBACK, "horizon": HORIZON, "fog_threshold_km": FOG_THRESHOLD_KM,
-        "hidden_size": HIDDEN_SIZE, "num_layers": 1, "seed": 42,
+        "hidden_size": HIDDEN_SIZE,
+        "dense_size": DENSE_SIZE,
+        "dense_activation": "ReLU",
+        "dense_dropout": DENSE_DROPOUT,
+        "num_layers": 1, "seed": 42,
         "spatial_test_station": SPATIAL_TEST_STATION,
         "validation_months": sorted(VALIDATION_MONTHS),
         "temporal_test_months": sorted(TEMPORAL_TEST_MONTHS),
         "best_epoch": best_epoch, "best_val_loss": best_val_loss,
-        "completed_epochs": len(train_losses), "pos_weight": pos_weight.item(),
+        "completed_epochs": len(train_losses),
+        "loss_function": "BinaryFocalLossWithLogits",
+        "focal_alpha": FOCAL_ALPHA, "focal_gamma": FOCAL_GAMMA,
+        "positive_class_cost_ratio": positive_class_cost_ratio,
         "train_losses": train_losses, "val_losses": val_losses,
     }
     with (output_dir / f"gru_fog_{feature_mode.lower()}_metadata.json").open(
@@ -251,7 +289,7 @@ def run_experiment(feature_mode, epochs, device, output_dir):
 
     test_loss = evaluate_loss(model, test_loader, criterion, device)
     probabilities, actual = predict_probabilities(model, test_loader, device)
-    print(f"Test weighted BCE: {test_loss:.4f}")
+    print(f"Test Focal Loss: {test_loss:.4f}")
     print_metrics("GRU Test @ 0.50", actual, probabilities >= 0.5)
     temporal_metrics = print_metrics("GRU Test", actual, probabilities >= threshold)
     print_metrics("Persistence Test", actual,
@@ -259,7 +297,7 @@ def run_experiment(feature_mode, epochs, device, output_dir):
 
     spatial_loss = evaluate_loss(model, spatial_test_loader, criterion, device)
     spatial_probabilities, spatial_actual = predict_probabilities(model, spatial_test_loader, device)
-    print(f"Spatial Test weighted BCE: {spatial_loss:.4f}")
+    print(f"Spatial Test Focal Loss: {spatial_loss:.4f}")
     print_metrics("GRU Spatial Test @ 0.50", spatial_actual,
                   spatial_probabilities >= 0.5)
     spatial_metrics = print_metrics("GRU Spatial Test", spatial_actual,
@@ -281,8 +319,8 @@ def run_experiment(feature_mode, epochs, device, output_dir):
     plt.plot(completed_epochs, val_losses, label="Validation Loss")
     plt.axvline(best_epoch, linestyle="--", label=f"Best Epoch = {best_epoch}")
     plt.xlabel("Epoch")
-    plt.ylabel("Weighted BCE Loss")
-    plt.title("Multi-station GRU Fog Detection Loss")
+    plt.ylabel("Focal Loss")
+    plt.title("Satellite GRU Focal Loss")
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
