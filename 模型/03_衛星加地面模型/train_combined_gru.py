@@ -32,11 +32,11 @@ from create_combined_sequences import (
 
 
 MODEL_DIR = Path(__file__).resolve().parent
-FOCAL_ALPHA = 0.91 #正類（霧）權重；可手動調整，必須介於 0 與 1
+FOCAL_ALPHA = 0.93 #正類（霧）權重；可手動調整，必須介於 0 與 1
 FOCAL_GAMMA = 1.0
 HIDDEN_SIZE = 64
 DENSE_SIZE = 32
-DENSE_DROPOUT = 0.3
+DENSE_DROPOUT = 0.2
 EARLY_STOPPING_PATIENCE = 5
 THRESHOLD_GRID = np.linspace(0.0, 1.0, 101)
 
@@ -233,7 +233,7 @@ def run_experiment(epochs, device, output_dir):
     )
 
     model = CombinedSatelliteGroundGRU(len(features)).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
     train_losses, val_losses = [], []
     best_val_loss, best_epoch, best_state = float("inf"), 0, None
     epochs_without_improvement = 0
